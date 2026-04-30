@@ -21,7 +21,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private lazy var log = FileLog(url: defaultLogURL())
     private var statusItem: NSStatusItem?
     private var statusMenuItem = NSMenuItem(title: "Starting...", action: nil, keyEquivalent: "")
-    private var productionToggleMenuItem = NSMenuItem(title: "Start Production", action: nil, keyEquivalent: "")
+    private var productionToggleMenuItem = NSMenuItem(title: "Enable", action: nil, keyEquivalent: "")
     private var launchAtLoginMenuItem = NSMenuItem(title: "Launch at Login", action: nil, keyEquivalent: "")
     private var debugPreviewMenuItem = NSMenuItem(title: "Show Debug Preview", action: nil, keyEquivalent: "")
     private var controller: VisionCaptureController?
@@ -81,6 +81,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func menuWillOpen(_ menu: NSMenu) {
+        syncProductionToggleMenuItem()
         syncLaunchAtLoginMenuItem()
     }
 
@@ -571,7 +572,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func updateStatus(_ status: String, state: HairAlertState) {
         statusMenuItem.title = "Status: \(status)"
-        updateProductionToggleTitle(status: status)
+        updateProductionToggleMenuItem(status: status)
         if state.active {
             configureStatusButton(
                 statusItem?.button,
@@ -596,14 +597,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    private func updateProductionToggleTitle(status: String) {
+    private func updateProductionToggleMenuItem(status: String) {
         switch status {
         case "Stopped", "Camera Permission Denied", "Start failed":
             productionWanted = false
-            productionToggleMenuItem.title = "Start Production"
         default:
-            productionToggleMenuItem.title = "Stop Production"
+            break
         }
+        syncProductionToggleMenuItem()
+    }
+
+    private func syncProductionToggleMenuItem() {
+        let enabled = productionWanted || productionStartPending || controller?.isRunning == true
+        productionToggleMenuItem.title = enabled ? "Disable" : "Enable"
+        productionToggleMenuItem.state = .off
     }
 
     @objc private func toggleProduction() {
@@ -618,6 +625,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         productionWanted = false
         productionStartPending = false
         stopPauseReconcileTimer()
+        syncProductionToggleMenuItem()
         controller?.stop()
     }
 

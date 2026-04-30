@@ -97,7 +97,7 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
                         "activeHandFPS=\(config.activeHandFPS) cameraFPS=\(config.cameraFPS) maxHands=\(config.maxHands) " +
                         "triggerSeconds=\(config.triggerSeconds) handBoostHoldSeconds=\(config.handBoostHoldSeconds)"
                 )
-                self.publishStatus("Running \(config.name)", state: .empty, force: true)
+                self.publishStatus("Enabled", state: .empty, force: true)
                 DispatchQueue.main.async {
                     completion?(true)
                 }
@@ -315,7 +315,7 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
                 stateForFrame = state
                 updateAlertSound(state: state, now: now)
                 maybeLog(state: state, hands: hands, now: now)
-                let label = state.active ? "Hand Near Head" : "Running \(config.name)"
+                let label = state.active ? "Hand Near Head" : "Enabled"
                 publishStatus(label, state: state)
             } else if face == nil {
                 let state = detector.update(face: nil, hands: [], now: now)
