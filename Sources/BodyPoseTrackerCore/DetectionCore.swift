@@ -31,8 +31,7 @@ public struct FaceBox: Equatable {
 public struct HeadZone: Equatable {
     public let centerX: Double
     public let centerY: Double
-    public let radiusX: Double
-    public let radiusY: Double
+    public let radius: Double
     public let faceBox: FaceBox
     public let stale: Bool
 }
@@ -40,7 +39,6 @@ public struct HeadZone: Equatable {
 public struct HairAlertState: Equatable {
     public let active: Bool
     public let streak: Int
-    public let minDistance: Double?
     public let zoneScore: Double?
     public let headZone: HeadZone?
     public let faceSeen: Bool
@@ -48,7 +46,6 @@ public struct HairAlertState: Equatable {
     public static let empty = HairAlertState(
         active: false,
         streak: 0,
-        minDistance: nil,
         zoneScore: nil,
         headZone: nil,
         faceSeen: false
@@ -56,6 +53,9 @@ public struct HairAlertState: Equatable {
 }
 
 public final class HairPickingDetector {
+    private static let reuleauxVertexY = 1.0 - sqrt(3.0)
+    private static let reuleauxRadius = 2.0
+
     public let triggerSeconds: TimeInterval
     public let headScale: Double
     public let faceHoldSeconds: TimeInterval
@@ -66,7 +66,7 @@ public final class HairPickingDetector {
     private var lastFaceAt: TimeInterval = 0
 
     public init(
-        triggerSeconds: TimeInterval = 0.3,
+        triggerSeconds: TimeInterval = 0.2,
         headScale: Double,
         faceHoldSeconds: TimeInterval
     ) {
@@ -93,7 +93,6 @@ public final class HairPickingDetector {
             return HairAlertState(
                 active: false,
                 streak: streak,
-                minDistance: nil,
                 zoneScore: nil,
                 headZone: nil,
                 faceSeen: false
@@ -102,22 +101,13 @@ public final class HairPickingDetector {
 
         let zone = Self.estimateHeadZone(face: usableFace, headScale: headScale, stale: stale)
         let points = Self.alertPoints(from: hands)
-        var minDistance: Double?
         var zoneScore: Double?
 
         if !points.isEmpty {
-            let distances = points.map { hypot($0.x - zone.centerX, $0.y - zone.centerY) }
-            minDistance = distances.min()
-
             let upperLimit = zone.faceBox.y + zone.faceBox.height * 1.10
             let scores = points
                 .filter { $0.y <= upperLimit }
-                .map { point in
-                    hypot(
-                        (point.x - zone.centerX) / zone.radiusX,
-                        (point.y - zone.centerY) / zone.radiusY
-                    )
-                }
+                .map { Self.headZoneScore(point: $0, in: zone) }
             zoneScore = scores.min()
         }
 
@@ -134,7 +124,6 @@ public final class HairPickingDetector {
         return HairAlertState(
             active: closeStartedAt.map { now - $0 >= triggerSeconds - 1e-9 } ?? false,
             streak: streak,
-            minDistance: minDistance,
             zoneScore: zoneScore,
             headZone: zone,
             faceSeen: faceSeen
@@ -147,14 +136,92 @@ public final class HairPickingDetector {
     }
 
     public static func estimateHeadZone(face: FaceBox, headScale: Double, stale: Bool = false) -> HeadZone {
-        HeadZone(
+        let baseRadiusX = max(48.0, face.width * 0.78 * headScale)
+        let baseRadiusY = max(58.0, face.height * 0.82 * headScale)
+        let radius = max(baseRadiusX, baseRadiusY) * 1.10
+
+        return HeadZone(
             centerX: face.x + face.width * 0.5,
             centerY: face.y + face.height * 0.38,
-            radiusX: max(48.0, face.width * 0.78 * headScale),
-            radiusY: max(58.0, face.height * 0.82 * headScale),
+            radius: radius,
             faceBox: face,
             stale: stale
         )
+    }
+
+    public static func headZoneScore(point: Landmark, in zone: HeadZone) -> Double {
+        guard zone.radius > 0 else { return .infinity }
+
+        let normalizedX = (point.x - zone.centerX) / zone.radius
+        let normalizedY = (point.y - zone.centerY) / zone.radius
+        let vertices = normalizedReuleauxVertices()
+        let maxDistance = vertices
+            .map { hypot(normalizedX - $0.x, normalizedY - $0.y) }
+            .max() ?? .infinity
+        return maxDistance / reuleauxRadius
+    }
+
+    public static func headZoneBoundaryPoints(for zone: HeadZone, samplesPerArc: Int = 24) -> [Landmark] {
+        let samples = max(2, samplesPerArc)
+        let vertices = normalizedReuleauxVertices()
+        var points: [(x: Double, y: Double)] = []
+
+        appendArc(
+            center: vertices[2],
+            startAngle: -2.0 * .pi / 3.0,
+            endAngle: -.pi / 3.0,
+            samples: samples,
+            into: &points
+        )
+        appendArc(
+            center: vertices[0],
+            startAngle: 0,
+            endAngle: .pi / 3.0,
+            samples: samples,
+            into: &points
+        )
+        appendArc(
+            center: vertices[1],
+            startAngle: 2.0 * .pi / 3.0,
+            endAngle: .pi,
+            samples: samples,
+            into: &points
+        )
+
+        return points.map { point in
+            Landmark(
+                x: zone.centerX + point.x * zone.radius,
+                y: zone.centerY + point.y * zone.radius
+            )
+        }
+    }
+
+    private static func normalizedReuleauxVertices() -> [(x: Double, y: Double)] {
+        [
+            (x: -1.0, y: reuleauxVertexY),
+            (x: 1.0, y: reuleauxVertexY),
+            (x: 0.0, y: 1.0)
+        ]
+    }
+
+    private static func appendArc(
+        center: (x: Double, y: Double),
+        startAngle: Double,
+        endAngle: Double,
+        samples: Int,
+        into points: inout [(x: Double, y: Double)]
+    ) {
+        for index in 0...samples {
+            if !points.isEmpty, index == 0 { continue }
+            let t = Double(index) / Double(samples)
+            let angle = startAngle + (endAngle - startAngle) * t
+            points.append(
+                (
+                    x: center.x + reuleauxRadius * cos(angle),
+                    y: center.y + reuleauxRadius * sin(angle)
+                )
+            )
+        }
     }
 
     private static func alertPoints(from hands: [[String: Landmark]]) -> [Landmark] {

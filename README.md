@@ -18,12 +18,20 @@ automatically, and the menu can stop, restart, open the debug preview, or quit.
 Use `Launch at Login` in the menu to register or unregister the app with
 macOS login items.
 
+## Source Layout
+
+The menu-bar target keeps the bootstrap in `main.swift`, app lifecycle in
+`AppDelegate.swift`, camera and Vision work in `VisionCaptureController.swift`,
+preview drawing in `DebugPreview.swift`, and small support types in
+`DetectionConfig.swift`, `AppOptions.swift`, `FileLog.swift`, and
+`ResourceLocations.swift`.
+
 ## Production Detection
 
 Production requests a lower `320x240` camera capture preset, runs face detection
 at `2 FPS`, idles hand detection at `4 FPS`, boosts hand detection to `8 FPS`
 while a hand or near-warning is recent, tracks at most one hand, and requires
-the hand to remain near the head for `0.3s` before the warning becomes active.
+the hand to remain near the head for `0.2s` before the warning becomes active.
 The app requests `10 FPS` at both the camera device and video connection layers;
 macOS may still clamp the physical camera format to the nearest supported rate.
 
@@ -54,7 +62,7 @@ window fed by the same `VisionCaptureController` used in production.
 Visual legend:
 
 - Green rectangle: detected face.
-- Blue/red ellipse: active head warning zone.
+- Blue/red Reuleaux triangle: active head warning zone.
 - Cyan points/lines: hand landmarks from Apple Vision.
 - Bottom label: current detection config, measured processing FPS, camera/connection
   FPS, frame size, target face/hand FPS, hand counts, streak, score, and delay.
