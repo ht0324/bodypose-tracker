@@ -8,8 +8,6 @@ import Vision
 
 private let bundledAlertSoundName = "iMovie-Alarm"
 private let bundledAlertSoundExtension = "mp3"
-private let useVisionHandRegionOfInterest = false
-private let plannedHandROIScale: CGFloat = 4.0
 
 private var projectAlertSoundURL: URL {
     URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
@@ -44,7 +42,6 @@ struct NativeProfile {
     let faceFPS: Double
     let handFPS: Double
     let maxHands: Int
-    let triggerFrames: Int
     let triggerSeconds: TimeInterval
     let headScale: Double
     let faceHoldSeconds: TimeInterval
@@ -60,7 +57,6 @@ struct NativeProfile {
         faceFPS: 2,
         handFPS: 8,
         maxHands: 1,
-        triggerFrames: 5,
         triggerSeconds: 0.3,
         headScale: 1.4,
         faceHoldSeconds: 1.0,
@@ -144,10 +140,9 @@ struct DebugFrame {
     let face: FaceBox?
     let hands: [[String: Landmark]]
     let state: HairAlertState
-    let plannedHandROI: CGRect?
-    let visionHandROI: CGRect
-    let visionROIEnabled: Bool
     let profile: NativeProfile
+    let appliedCameraFPS: Double?
+    let observedProcessingFPS: Double
 }
 
 final class DebugPreviewView: NSView {
@@ -196,7 +191,6 @@ final class DebugPreviewView: NSView {
         let imageRect = fittedImageRect(imageSize: frameData.imageSize)
         NSImage(cgImage: frameData.image, size: frameData.imageSize).draw(in: imageRect)
 
-        drawPlannedROI(frameData.plannedHandROI, imageSize: frameData.imageSize, imageRect: imageRect)
         drawFace(frameData.face, imageRect: imageRect)
         drawHeadZone(frameData.state.headZone, active: frameData.state.active, imageRect: imageRect)
         drawHands(frameData.hands, imageRect: imageRect)
@@ -247,25 +241,6 @@ final class DebugPreviewView: NSView {
             x: imageRect.minX + point.x * scale,
             y: imageRect.maxY - point.y * scale
         )
-    }
-
-    private func normalizedVisionRect(_ rect: CGRect, imageSize: CGSize, imageRect: CGRect) -> CGRect {
-        let topLeftRect = CGRect(
-            x: rect.origin.x * imageSize.width,
-            y: (1.0 - rect.origin.y - rect.height) * imageSize.height,
-            width: rect.width * imageSize.width,
-            height: rect.height * imageSize.height
-        )
-        return projectTopLeftRect(topLeftRect, into: imageRect)
-    }
-
-    private func drawPlannedROI(_ roi: CGRect?, imageSize: CGSize, imageRect: CGRect) {
-        guard let roi else { return }
-        let rect = normalizedVisionRect(roi, imageSize: imageSize, imageRect: imageRect)
-        NSColor.systemOrange.withAlphaComponent(0.9).setStroke()
-        let path = NSBezierPath(rect: rect)
-        path.lineWidth = 2
-        path.stroke()
     }
 
     private func drawFace(_ face: FaceBox?, imageRect: CGRect) {
@@ -322,36 +297,30 @@ final class DebugPreviewView: NSView {
 
     private func drawStatus(_ frameData: DebugFrame, imageRect: CGRect) {
         let score = frameData.state.zoneScore.map { String(format: "%.2f", $0) } ?? "-"
-        let roiLabel: String
-        if frameData.visionROIEnabled {
-            roiLabel = String(
-                format: "Vision ROI %.2f,%.2f %.2fx%.2f",
-                frameData.visionHandROI.origin.x,
-                frameData.visionHandROI.origin.y,
-                frameData.visionHandROI.width,
-                frameData.visionHandROI.height
-            )
-        } else {
-            roiLabel = "Vision ROI full frame"
-        }
-        let planned = frameData.plannedHandROI == nil ? "4x debug ROI unavailable" : "orange debug 4x ROI"
+        let cameraFPS = frameData.appliedCameraFPS.map { String(format: "%.0f", $0) } ?? "-"
         let usableHands = frameData.hands.filter { !$0.isEmpty }.count
         let pointCount = frameData.hands.reduce(0) { $0 + $1.count }
-        let text = String(
-            format: "Profile %@ | face %@ | hands %d/%d pts %d | streak %d | score %@ | %@ | %@ | delay %.1fs",
+        let line1 = String(
+            format: "%@ | fps %.1f | cam %@ | face %.0f | hand %.0f | delay %.1fs",
             frameData.profile.name,
+            frameData.observedProcessingFPS,
+            cameraFPS,
+            frameData.profile.faceFPS,
+            frameData.profile.handFPS,
+            frameData.profile.triggerSeconds
+        )
+        let line2 = String(
+            format: "face %@ | hands %d/%d pts %d | streak %d | score %@",
             frameData.face == nil ? "no" : "yes",
             usableHands,
             frameData.hands.count,
             pointCount,
             frameData.state.streak,
-            score,
-            roiLabel,
-            planned,
-            frameData.profile.triggerSeconds
+            score
         )
+        let text = "\(line1)\n\(line2)"
 
-        let barHeight: CGFloat = 30
+        let barHeight: CGFloat = 48
         let barRect = CGRect(x: imageRect.minX, y: imageRect.minY, width: imageRect.width, height: barHeight)
         NSColor.black.withAlphaComponent(0.78).setFill()
         barRect.fill()
@@ -361,7 +330,7 @@ final class DebugPreviewView: NSView {
             .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .medium)
         ]
         NSAttributedString(string: text, attributes: attributes).draw(
-            in: barRect.insetBy(dx: 10, dy: 7)
+            in: barRect.insetBy(dx: 10, dy: 6)
         )
     }
 }
@@ -403,7 +372,7 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
     private let session = AVCaptureSession()
     private let captureQueue = DispatchQueue(label: "BodyPoseTracker.capture", qos: .utility)
     private let sequenceHandler = VNSequenceRequestHandler()
-    private let ciContext = CIContext()
+    private lazy var ciContext = CIContext()
     private let faceRequest = VNDetectFaceRectanglesRequest()
     private let handRequest = VNDetectHumanHandPoseRequest()
     private let log: FileLog
@@ -413,7 +382,6 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
 
     private var profile = NativeProfile.production
     private var detector = HairPickingDetector(
-        triggerFrames: NativeProfile.production.triggerFrames,
         triggerSeconds: NativeProfile.production.triggerSeconds,
         headScale: NativeProfile.production.headScale,
         faceHoldSeconds: NativeProfile.production.faceHoldSeconds
@@ -427,7 +395,8 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
     private var lastBeepAt = Date.distantPast.timeIntervalSinceReferenceDate
     private var lastPublishedStatus: String?
     private var lastPublishedActive: Bool?
-    private var handRegionOfInterest = VNNormalizedIdentityRect
+    private var debugFrameTimes: [TimeInterval] = []
+    private var appliedCameraFPS: Double?
     private var latestHands: [[String: Landmark]] = []
     private var latestState = HairAlertState.empty
     private var alertWasActive = false
@@ -450,7 +419,6 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
         captureQueue.async {
             self.profile = profile
             self.detector = HairPickingDetector(
-                triggerFrames: profile.triggerFrames,
                 triggerSeconds: profile.triggerSeconds,
                 headScale: profile.headScale,
                 faceHoldSeconds: profile.faceHoldSeconds
@@ -463,7 +431,7 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
             self.lastBeepAt = Date.distantPast.timeIntervalSinceReferenceDate
             self.lastPublishedStatus = nil
             self.lastPublishedActive = nil
-            self.handRegionOfInterest = VNNormalizedIdentityRect
+            self.debugFrameTimes = []
             self.latestHands = []
             self.latestState = .empty
             self.alertWasActive = false
@@ -569,6 +537,7 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
             defer { device.unlockForConfiguration() }
             device.activeVideoMinFrameDuration = frameDuration
             device.activeVideoMaxFrameDuration = frameDuration
+            appliedCameraFPS = Double(roundedFPS)
             log.write(
                 String(
                     format: "camera frame duration targetFPS=%.1f appliedFPS=%d",
@@ -577,6 +546,7 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
                 )
             )
         } catch {
+            appliedCameraFPS = nil
             log.write("camera frame duration failed: \(error.localizedDescription)")
         }
     }
@@ -618,7 +588,6 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
             lastFaceProcessAt = now
         }
         if runHands {
-            handRequest.regionOfInterest = useVisionHandRegionOfInterest ? recentHandRegionOfInterest(now: now) : VNNormalizedIdentityRect
             requests.append(handRequest)
             lastHandProcessAt = now
         }
@@ -631,7 +600,7 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
             var stateForFrame = latestState
 
             if runHands {
-                let hands = recognizedHands(width: width, height: height, regionOfInterest: handRequest.regionOfInterest)
+                let hands = recognizedHands(width: width, height: height)
                 let state = detector.update(face: face, hands: hands, now: now)
                 latestHands = hands
                 latestState = state
@@ -651,8 +620,6 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
                 maybeLog(state: state, hands: [], now: now)
             }
 
-            let plannedROI = face == nil ? nil : recentHandRegionOfInterest(now: now)
-            let visionROI = useVisionHandRegionOfInterest ? (plannedROI ?? VNNormalizedIdentityRect) : VNNormalizedIdentityRect
             emitDebugFrame(
                 pixelBuffer: pixelBuffer,
                 width: width,
@@ -660,8 +627,7 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
                 face: face,
                 hands: handsForFrame,
                 state: stateForFrame,
-                plannedROI: plannedROI,
-                visionROI: visionROI
+                now: now
             )
         } catch {
             if now - lastLogAt > 2.0 {
@@ -678,10 +644,10 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
         face: FaceBox?,
         hands: [[String: Landmark]],
         state: HairAlertState,
-        plannedROI: CGRect?,
-        visionROI: CGRect
+        now: TimeInterval
     ) {
         guard let debugFrameHandler else { return }
+        let observedFPS = updateObservedDebugFPS(now: now)
         let image = CIImage(cvPixelBuffer: pixelBuffer)
         let imageRect = CGRect(x: 0, y: 0, width: width, height: height)
         guard let cgImage = ciContext.createCGImage(image, from: imageRect) else { return }
@@ -692,57 +658,56 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
                 face: face,
                 hands: hands,
                 state: state,
-                plannedHandROI: plannedROI,
-                visionHandROI: visionROI,
-                visionROIEnabled: useVisionHandRegionOfInterest,
-                profile: profile
+                profile: profile,
+                appliedCameraFPS: appliedCameraFPS,
+                observedProcessingFPS: observedFPS
             )
         )
     }
 
-    private func updateFaceState(width: Int, height: Int, now: TimeInterval) -> FaceBox? {
-        guard let best = bestFace(width: width, height: height) else { return nil }
-        latestFace = best.face
-        handRegionOfInterest = Self.handSearchRegion(around: best.normalizedBox)
-        lastFaceObservationAt = now
-        return best.face
+    private func updateObservedDebugFPS(now: TimeInterval) -> Double {
+        debugFrameTimes.append(now)
+        debugFrameTimes.removeAll { now - $0 > 2.0 }
+        guard let first = debugFrameTimes.first, let last = debugFrameTimes.last, last > first else {
+            return Double(debugFrameTimes.count)
+        }
+        return Double(debugFrameTimes.count - 1) / (last - first)
     }
 
-    private func bestFace(width: Int, height: Int) -> (face: FaceBox, normalizedBox: CGRect)? {
+    private func updateFaceState(width: Int, height: Int, now: TimeInterval) -> FaceBox? {
+        guard let face = bestFace(width: width, height: height) else { return nil }
+        latestFace = face
+        lastFaceObservationAt = now
+        return face
+    }
+
+    private func bestFace(width: Int, height: Int) -> FaceBox? {
         let observations = faceRequest.results ?? []
         return observations
-            .map { observation -> (face: FaceBox, normalizedBox: CGRect) in
+            .map { observation -> FaceBox in
                 let box = observation.boundingBox
-                return (
-                    FaceBox(
-                        x: Double(box.origin.x) * Double(width),
-                        y: (1.0 - Double(box.origin.y) - Double(box.height)) * Double(height),
-                        width: Double(box.width) * Double(width),
-                        height: Double(box.height) * Double(height),
-                        confidence: Double(observation.confidence)
-                    ),
-                    box
+                return FaceBox(
+                    x: Double(box.origin.x) * Double(width),
+                    y: (1.0 - Double(box.origin.y) - Double(box.height)) * Double(height),
+                    width: Double(box.width) * Double(width),
+                    height: Double(box.height) * Double(height),
+                    confidence: Double(observation.confidence)
                 )
             }
             .max { lhs, rhs in
-                lhs.face.width * lhs.face.height * max(lhs.face.confidence, 0.01) <
-                    rhs.face.width * rhs.face.height * max(rhs.face.confidence, 0.01)
+                lhs.width * lhs.height * max(lhs.confidence, 0.01) <
+                    rhs.width * rhs.height * max(rhs.confidence, 0.01)
             }
     }
 
-    private func recognizedHands(width: Int, height: Int, regionOfInterest: CGRect) -> [[String: Landmark]] {
+    private func recognizedHands(width: Int, height: Int) -> [[String: Landmark]] {
         let observations = handRequest.results ?? []
         return observations.map { observation in
             let points = (try? observation.recognizedPoints(.all)) ?? [:]
             var hand: [String: Landmark] = [:]
             for (joint, point) in points {
                 guard point.confidence >= 0.28, let label = handLabel(joint) else { continue }
-                let imagePoint = Self.imagePoint(
-                    from: point,
-                    width: width,
-                    height: height,
-                    regionOfInterest: regionOfInterest
-                )
+                let imagePoint = Self.imagePoint(from: point, width: width, height: height)
                 hand[label] = Landmark(
                     x: Double(imagePoint.x),
                     y: Double(imagePoint.y),
@@ -753,13 +718,6 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
         }
     }
 
-    private func recentHandRegionOfInterest(now: TimeInterval) -> CGRect {
-        guard now - lastFaceObservationAt <= profile.faceHoldSeconds else {
-            return VNNormalizedIdentityRect
-        }
-        return handRegionOfInterest
-    }
-
     private func recentFace(now: TimeInterval) -> FaceBox? {
         guard let latestFace, now - lastFaceObservationAt <= profile.faceHoldSeconds else {
             return nil
@@ -767,46 +725,13 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
         return latestFace
     }
 
-    private static func handSearchRegion(around faceBox: CGRect) -> CGRect {
-        let side = min(1.0, max(faceBox.width, faceBox.height) * plannedHandROIScale)
-        let centerX = faceBox.midX
-        let centerY = faceBox.midY
-        return clampedNormalizedRect(
-            CGRect(
-                x: centerX - side * 0.5,
-                y: centerY - side * 0.5,
-                width: side,
-                height: side
-            )
-        )
-    }
-
-    private static func clampedNormalizedRect(_ rect: CGRect) -> CGRect {
-        let width = min(max(rect.width, 0.05), 1.0)
-        let height = min(max(rect.height, 0.05), 1.0)
-        let x = min(max(rect.origin.x, 0), 1.0 - width)
-        let y = min(max(rect.origin.y, 0), 1.0 - height)
-        return CGRect(x: x, y: y, width: width, height: height)
-    }
-
     private static func imagePoint(
         from point: VNRecognizedPoint,
         width: Int,
-        height: Int,
-        regionOfInterest: CGRect
+        height: Int
     ) -> CGPoint {
         let normalizedPoint = CGPoint(x: CGFloat(point.x), y: CGFloat(point.y))
-        let imagePoint: CGPoint
-        if VNNormalizedRectIsIdentityRect(regionOfInterest) {
-            imagePoint = VNImagePointForNormalizedPoint(normalizedPoint, width, height)
-        } else {
-            imagePoint = VNImagePointForNormalizedPointUsingRegionOfInterest(
-                normalizedPoint,
-                width,
-                height,
-                regionOfInterest
-            )
-        }
+        let imagePoint = VNImagePointForNormalizedPoint(normalizedPoint, width, height)
         return CGPoint(x: imagePoint.x, y: CGFloat(height) - imagePoint.y)
     }
 
@@ -892,13 +817,11 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
         guard now - lastLogAt >= 2.0 else { return }
         lastLogAt = now
         let score = state.zoneScore.map { String(format: "%.2f", $0) } ?? "-"
-        let roi = recentHandRegionOfInterest(now: now)
-        let visionROI = useVisionHandRegionOfInterest ? String(format: "%.2f,%.2f,%.2f,%.2f", roi.origin.x, roi.origin.y, roi.width, roi.height) : "full"
         let usableHands = hands.filter { !$0.isEmpty }.count
         let pointCount = hands.reduce(0) { $0 + $1.count }
         log.write(
             "status profile=\(profile.name) face=\(state.faceSeen) hands=\(usableHands) rawHands=\(hands.count) points=\(pointCount) streak=\(state.streak) " +
-                "active=\(state.active) score=\(score) visionROI=\(visionROI) plannedROI=\(String(format: "%.2f,%.2f,%.2f,%.2f", roi.origin.x, roi.origin.y, roi.width, roi.height))"
+                "active=\(state.active) score=\(score)"
         )
     }
 }

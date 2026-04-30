@@ -56,7 +56,6 @@ public struct HairAlertState: Equatable {
 }
 
 public final class HairPickingDetector {
-    public let triggerFrames: Int
     public let triggerSeconds: TimeInterval
     public let headScale: Double
     public let faceHoldSeconds: TimeInterval
@@ -67,12 +66,10 @@ public final class HairPickingDetector {
     private var lastFaceAt: TimeInterval = 0
 
     public init(
-        triggerFrames: Int,
         triggerSeconds: TimeInterval = 0.3,
         headScale: Double,
         faceHoldSeconds: TimeInterval
     ) {
-        self.triggerFrames = max(1, triggerFrames)
         self.triggerSeconds = max(0, triggerSeconds)
         self.headScale = headScale
         self.faceHoldSeconds = faceHoldSeconds

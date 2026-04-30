@@ -24,12 +24,9 @@ the hand to remain near the head for `0.3s` before the warning becomes active.
 The camera may clamp the requested `10 FPS` capture cadence to the nearest
 supported format.
 
-The app computes a planned square hand-search region centered on the detected
-head for debugging only. The square side is `4x` the detected head size before
-it is clamped to the camera frame. Hand pose currently runs full-frame because
-Apple Vision hand pose is less stable when cropped to a moving ROI. The
-detector only alerts when high-confidence hand landmarks enter the blue/red
-head warning zone.
+Hand pose runs full-frame because Apple Vision hand pose is less stable when
+cropped to a moving ROI. The detector only alerts when high-confidence hand
+landmarks enter the blue/red head warning zone.
 
 Warnings play the bundled `iMovie-Alarm.mp3` by default. You can override it
 with `--alert-sound /path/to/sound.mp3`, or use `--no-alert-sound` to fall back
@@ -45,9 +42,8 @@ Visual legend:
 - Green rectangle: detected face.
 - Blue/red ellipse: active head warning zone.
 - Cyan points/lines: hand landmarks from Apple Vision.
-- Orange square: debug-only planned `4x` head-centered ROI.
-- Bottom label: current profile, face/hand counts, streak, score, delay, and
-  whether Vision hand detection is full frame or ROI-cropped.
+- Bottom label: current profile, measured processing FPS, camera FPS, target
+  face/hand FPS, hand counts, streak, score, and delay.
 
 ## Logs
 
@@ -55,8 +51,8 @@ Visual legend:
 tail -f ~/Library/Logs/BodyPoseTracker/BodyPoseTracker.log
 ```
 
-Log lines include both `visionROI` and `plannedROI`. `visionROI=full` means
-hand pose inference is full-frame; `plannedROI` is the orange debug-only ROI.
+Log lines include face/hand counts, usable landmark count, streak, active
+state, and score.
 
 ## Short Test Run
 

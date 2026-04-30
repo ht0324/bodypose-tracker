@@ -3,7 +3,7 @@ import XCTest
 
 final class DetectionCoreTests: XCTestCase {
     func testHandNearHeadActivatesAfterContinuousDelay() {
-        let detector = HairPickingDetector(triggerFrames: 99, triggerSeconds: 0.3, headScale: 1.4, faceHoldSeconds: 1.0)
+        let detector = HairPickingDetector(triggerSeconds: 0.3, headScale: 1.4, faceHoldSeconds: 1.0)
         let face = FaceBox(x: 100, y: 100, width: 100, height: 100)
         let hands = [["index_tip": Landmark(x: 170, y: 80)]]
 
@@ -17,7 +17,7 @@ final class DetectionCoreTests: XCTestCase {
     }
 
     func testLeavingZoneResetsContinuousDelay() {
-        let detector = HairPickingDetector(triggerFrames: 99, triggerSeconds: 0.3, headScale: 1.4, faceHoldSeconds: 1.0)
+        let detector = HairPickingDetector(triggerSeconds: 0.3, headScale: 1.4, faceHoldSeconds: 1.0)
         let face = FaceBox(x: 100, y: 100, width: 100, height: 100)
         let closeHand = [["index_tip": Landmark(x: 170, y: 80)]]
         let farHand = [["index_tip": Landmark(x: 400, y: 80)]]
@@ -35,7 +35,7 @@ final class DetectionCoreTests: XCTestCase {
     }
 
     func testFarHandDoesNotActivate() {
-        let detector = HairPickingDetector(triggerFrames: 1, triggerSeconds: 0.3, headScale: 1.4, faceHoldSeconds: 1.0)
+        let detector = HairPickingDetector(triggerSeconds: 0.3, headScale: 1.4, faceHoldSeconds: 1.0)
         let face = FaceBox(x: 100, y: 100, width: 100, height: 100)
         let hands = [["index_tip": Landmark(x: 400, y: 80)]]
 
@@ -46,7 +46,7 @@ final class DetectionCoreTests: XCTestCase {
     }
 
     func testFaceHoldCoversBriefOcclusion() {
-        let detector = HairPickingDetector(triggerFrames: 1, triggerSeconds: 0.3, headScale: 1.4, faceHoldSeconds: 1.0)
+        let detector = HairPickingDetector(triggerSeconds: 0.3, headScale: 1.4, faceHoldSeconds: 1.0)
         let face = FaceBox(x: 100, y: 100, width: 100, height: 100)
         _ = detector.update(face: face, hands: [], now: 0)
 
@@ -58,7 +58,7 @@ final class DetectionCoreTests: XCTestCase {
     }
 
     func testFaceHoldExpires() {
-        let detector = HairPickingDetector(triggerFrames: 1, triggerSeconds: 0.3, headScale: 1.4, faceHoldSeconds: 1.0)
+        let detector = HairPickingDetector(triggerSeconds: 0.3, headScale: 1.4, faceHoldSeconds: 1.0)
         let face = FaceBox(x: 100, y: 100, width: 100, height: 100)
         _ = detector.update(face: face, hands: [], now: 0)
 
