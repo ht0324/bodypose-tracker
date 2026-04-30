@@ -474,7 +474,7 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
         }
     }
 
-    func stop() {
+    func stop(status: String = "Stopped", completion: (() -> Void)? = nil) {
         captureQueue.async {
             if self.session.isRunning {
                 self.session.stopRunning()
@@ -486,9 +486,10 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
             self.latestHands = []
             self.latestState = .empty
             self.stopAlertSound()
-            self.log.write("stopped")
+            self.log.write("stopped status=\(status)")
             DispatchQueue.main.async {
-                self.onStatus("Stopped", .empty)
+                self.onStatus(status, .empty)
+                completion?()
             }
         }
     }
@@ -915,6 +916,10 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    private let pauseApps: [(bundleID: String, name: String)] = [
+        ("us.zoom.xos", "Zoom"),
+        ("com.apple.FaceTime", "FaceTime")
+    ]
     private let options = AppOptions.parse(arguments: CommandLine.arguments)
     private lazy var log = FileLog(url: defaultLogURL())
     private var statusItem: NSStatusItem?
@@ -924,6 +929,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var controller: VisionCaptureController?
     private var debugPreviewWindow: DebugPreviewWindowController?
     private var productionWanted = false
+    private var runningPauseAppBundleIDs = Set<String>()
+    private var workspaceObservers: [NSObjectProtocol] = []
+    private var pauseReconcileTimer: Timer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -933,6 +941,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         controller = VisionCaptureController(log: log, alertSoundURL: options.alertSoundURL) { [weak self] status, state in
             self?.updateStatus(status, state: state)
         }
+        setupPauseAppMonitoring()
 
         if options.autostart {
             start(.production)
@@ -954,6 +963,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        for observer in workspaceObservers {
+            NSWorkspace.shared.notificationCenter.removeObserver(observer)
+        }
+        workspaceObservers = []
+        stopPauseReconcileTimer()
         log.write("applicationWillTerminate")
     }
 
@@ -1041,14 +1055,167 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    private func setupPauseAppMonitoring() {
+        refreshRunningPauseApps()
+        let notificationCenter = NSWorkspace.shared.notificationCenter
+        workspaceObservers = [
+            notificationCenter.addObserver(
+                forName: NSWorkspace.didLaunchApplicationNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] notification in
+                self?.handleWorkspaceAppChange(notification, launched: true)
+            },
+            notificationCenter.addObserver(
+                forName: NSWorkspace.didTerminateApplicationNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] notification in
+                self?.handleWorkspaceAppChange(notification, launched: false)
+            }
+        ]
+
+        if let reason = pauseReason {
+            log.write("pause apps already running reason=\(reason)")
+        }
+    }
+
+    private func refreshRunningPauseApps() {
+        let pauseBundleIDs = Set(pauseApps.map(\.bundleID))
+        runningPauseAppBundleIDs = Set(
+            NSWorkspace.shared.runningApplications
+                .compactMap(\.bundleIdentifier)
+                .filter { pauseBundleIDs.contains($0) }
+        )
+    }
+
+    private func handleWorkspaceAppChange(_ notification: Notification, launched: Bool) {
+        let previousBundleIDs = runningPauseAppBundleIDs
+        let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+        refreshRunningPauseApps()
+
+        let launchedBundleIDs = runningPauseAppBundleIDs.subtracting(previousBundleIDs)
+        let terminatedBundleIDs = previousBundleIDs.subtracting(runningPauseAppBundleIDs)
+        let notifiedPauseBundleID = app?.bundleIdentifier.flatMap { pauseAppName(for: $0) == nil ? nil : $0 }
+        logPauseAppChanges(launchedBundleIDs: launchedBundleIDs, terminatedBundleIDs: terminatedBundleIDs)
+
+        if launchedBundleIDs.isEmpty,
+           terminatedBundleIDs.isEmpty,
+           let bundleID = notifiedPauseBundleID,
+           let appName = pauseAppName(for: bundleID) {
+            let eventName = launched ? "launch" : "terminate"
+            log.write("pause app \(eventName) event name=\(appName) bundleID=\(bundleID) stateUnchanged")
+        }
+
+        if !launchedBundleIDs.isEmpty || !terminatedBundleIDs.isEmpty || notifiedPauseBundleID != nil {
+            reconcileProductionPause()
+        }
+    }
+
+    private var pauseReason: String? {
+        let names = pauseApps.compactMap { app in
+            runningPauseAppBundleIDs.contains(app.bundleID) ? app.name : nil
+        }
+        return names.isEmpty ? nil : names.joined(separator: ", ")
+    }
+
+    private func pauseAppName(for bundleID: String) -> String? {
+        pauseApps.first { $0.bundleID == bundleID }?.name
+    }
+
+    private func reconcileProductionPause() {
+        guard productionWanted else { return }
+
+        if let reason = pauseReason {
+            pauseProduction(reason: reason)
+            startPauseReconcileTimerIfNeeded()
+        } else if controller?.isRunning != true {
+            stopPauseReconcileTimer()
+            log.write("pause apps cleared; resuming production")
+            start(.production)
+        } else {
+            stopPauseReconcileTimer()
+        }
+    }
+
+    private func pauseProduction(reason: String) {
+        startPauseReconcileTimerIfNeeded()
+        let status = "Paused: \(reason)"
+        if controller?.isRunning == true {
+            log.write("pausing production reason=\(reason)")
+            controller?.stop(status: status) { [weak self] in
+                guard let self, self.productionWanted, self.pauseReason == nil else { return }
+                self.log.write("pause apps cleared during stop; resuming production")
+                self.start(.production)
+            }
+        } else {
+            updateStatus(status, state: .empty)
+        }
+    }
+
+    private func startPauseReconcileTimerIfNeeded() {
+        guard pauseReconcileTimer == nil else { return }
+
+        pauseReconcileTimer = Timer.scheduledTimer(withTimeInterval: 2.0, repeats: true) { [weak self] timer in
+            guard let self else {
+                timer.invalidate()
+                return
+            }
+            guard self.productionWanted else {
+                self.stopPauseReconcileTimer()
+                return
+            }
+
+            let previousBundleIDs = self.runningPauseAppBundleIDs
+            self.refreshRunningPauseApps()
+            let launchedBundleIDs = self.runningPauseAppBundleIDs.subtracting(previousBundleIDs)
+            let terminatedBundleIDs = previousBundleIDs.subtracting(self.runningPauseAppBundleIDs)
+            self.logPauseAppChanges(launchedBundleIDs: launchedBundleIDs, terminatedBundleIDs: terminatedBundleIDs)
+
+            if !launchedBundleIDs.isEmpty || !terminatedBundleIDs.isEmpty || self.pauseReason == nil {
+                self.reconcileProductionPause()
+            }
+        }
+        pauseReconcileTimer?.tolerance = 0.5
+    }
+
+    private func stopPauseReconcileTimer() {
+        pauseReconcileTimer?.invalidate()
+        pauseReconcileTimer = nil
+    }
+
+    private func logPauseAppChanges(launchedBundleIDs: Set<String>, terminatedBundleIDs: Set<String>) {
+        for bundleID in launchedBundleIDs.sorted() {
+            if let appName = pauseAppName(for: bundleID) {
+                log.write("pause app launched name=\(appName) bundleID=\(bundleID)")
+            }
+        }
+        for bundleID in terminatedBundleIDs.sorted() {
+            if let appName = pauseAppName(for: bundleID) {
+                log.write("pause app terminated name=\(appName) bundleID=\(bundleID)")
+            }
+        }
+    }
+
     private func start(_ config: DetectionConfig) {
         productionWanted = true
+        if let reason = pauseReason {
+            log.write("production start deferred reason=\(reason)")
+            pauseProduction(reason: reason)
+            return
+        }
+
         updateStatus("Checking Camera", state: .empty)
         requestCameraAccess { [weak self] granted in
             guard let self else { return }
             guard self.productionWanted else {
                 self.log.write("production start canceled before camera startup")
                 self.updateStatus("Stopped", state: .empty)
+                return
+            }
+            if let reason = self.pauseReason {
+                self.log.write("production start deferred after camera check reason=\(reason)")
+                self.pauseProduction(reason: reason)
                 return
             }
             guard granted else {
@@ -1109,6 +1276,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func stopProduction() {
         productionWanted = false
+        stopPauseReconcileTimer()
         controller?.stop()
     }
 

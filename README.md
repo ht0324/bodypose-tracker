@@ -25,6 +25,12 @@ the hand to remain near the head for `0.3s` before the warning becomes active.
 The app requests `10 FPS` at both the camera device and video connection layers;
 macOS may still clamp the physical camera format to the nearest supported rate.
 
+Production automatically pauses camera capture while Zoom (`us.zoom.xos`) or
+FaceTime (`com.apple.FaceTime`) is running, then resumes after those apps quit.
+This is event-driven through `NSWorkspace` app launch/termination notifications.
+While paused, it also uses a low-frequency reconciliation check so short-lived
+video-call app processes do not leave capture paused.
+
 Hand pose runs full-frame because Apple Vision hand pose is less stable when
 cropped to a moving ROI. The detector only alerts when high-confidence hand
 landmarks enter the blue/red head warning zone.
