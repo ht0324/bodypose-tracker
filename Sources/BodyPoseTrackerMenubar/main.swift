@@ -8,7 +8,7 @@ import Vision
 
 private let bundledAlertSoundName = "iMovie-Alarm"
 private let bundledAlertSoundExtension = "mp3"
-private let useVisionHandRegionOfInterest = false
+private let useVisionHandRegionOfInterest = true
 private let plannedHandROIScale: CGFloat = 4.0
 
 private var projectAlertSoundURL: URL {
@@ -338,7 +338,7 @@ final class DebugPreviewView: NSView {
         } else {
             roiLabel = "Vision ROI full frame"
         }
-        let planned = frameData.plannedHandROI == nil ? "planned 4x unavailable" : "orange planned 4x head square"
+        let planned = frameData.plannedHandROI == nil ? "4x ROI unavailable" : "orange active 4x ROI"
         let text = String(
             format: "Profile %@ | face %@ | hands %d | streak %d | score %@ | %@ | %@ | delay %.1fs",
             frameData.profile.name,

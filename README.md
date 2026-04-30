@@ -24,9 +24,8 @@ the warning becomes active.
 
 The app computes a planned square hand-search region centered on the detected
 head. The square side is `4x` the detected head size before it is clamped to the
-camera frame. Hand pose currently still runs on the full frame for reliability;
-the planned square is drawn and logged so the ROI can be tuned against the exact
-production feed before re-enabling Vision ROI cropping.
+camera frame. Hand pose runs inside this Vision ROI, so hands outside the orange
+square are ignored by the detector.
 
 Warnings play the bundled `iMovie-Alarm.mp3` by default. You can override it
 with `--alert-sound /path/to/sound.mp3`, or use `--no-alert-sound` to fall back
@@ -42,7 +41,7 @@ Visual legend:
 - Green rectangle: detected face.
 - Blue/red ellipse: active head warning zone.
 - Cyan points/lines: hand landmarks from Apple Vision.
-- Orange square: planned `4x` head-centered hand-search ROI.
+- Orange square: active `4x` head-centered hand-search ROI.
 - Bottom label: current profile, face/hand counts, streak, score, delay, and
   whether Vision hand detection is full frame or ROI-cropped.
 
@@ -52,9 +51,8 @@ Visual legend:
 tail -f ~/Library/Logs/BodyPoseTracker/BodyPoseTracker.log
 ```
 
-Log lines include both `visionROI` and `plannedROI`. Today `visionROI=full`
-means hand pose inference is intentionally full-frame while the orange planned
-ROI is only visualized and logged.
+Log lines include both `visionROI` and `plannedROI`. In production they should
+match; if `visionROI=full`, the app is running full-frame hand detection.
 
 ## Short Test Run
 
