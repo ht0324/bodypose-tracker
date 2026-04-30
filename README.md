@@ -18,7 +18,7 @@ automatically, and the menu can stop, restart, open the debug preview, or quit.
 
 ## Production Detection
 
-Production requests a lower `352x288` camera capture preset, runs face detection
+Production requests a lower `320x240` camera capture preset, runs face detection
 at `2 FPS`, idles hand detection at `4 FPS`, boosts hand detection to `8 FPS`
 while a hand or near-warning is recent, tracks at most one hand, and requires
 the hand to remain near the head for `0.3s` before the warning becomes active.

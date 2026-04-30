@@ -55,7 +55,7 @@ struct DetectionConfig {
 
     static let production = DetectionConfig(
         name: "Production",
-        capturePreset: .cif352x288,
+        capturePreset: .qvga320x240,
         cameraFPS: 10,
         faceFPS: 2,
         idleHandFPS: 4,
