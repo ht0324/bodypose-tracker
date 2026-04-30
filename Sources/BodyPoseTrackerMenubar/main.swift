@@ -79,38 +79,6 @@ struct NativeProfile {
         faceHoldSeconds: 1.0,
         presenceGate: true
     )
-
-    static let background = NativeProfile(
-        name: "Background",
-        cameraWidth: 640,
-        cameraHeight: 360,
-        faceFPS: 3,
-        handFPS: 6,
-        maxDimension: 384,
-        maxHands: 1,
-        triggerFrames: 4,
-        triggerSeconds: 0.3,
-        headScale: 1.4,
-        faceHoldSeconds: 1.0,
-        presenceGate: true
-    )
-
-    static let eco = NativeProfile(
-        name: "Eco",
-        cameraWidth: 480,
-        cameraHeight: 270,
-        faceFPS: 2,
-        handFPS: 3,
-        maxDimension: 320,
-        maxHands: 1,
-        triggerFrames: 3,
-        triggerSeconds: 0.3,
-        headScale: 1.4,
-        faceHoldSeconds: 1.0,
-        presenceGate: true
-    )
-
-    static let all = [production, background, eco]
 }
 
 final class FileLog {
@@ -148,7 +116,7 @@ struct AppOptions {
 
     static func parse(arguments: [String]) -> AppOptions {
         var duration: TimeInterval?
-        var profile = NativeProfile.production
+        let profile = NativeProfile.production
         var autostart = true
         var alertSoundURL = defaultAlertSoundURL()
         var index = 1
@@ -159,8 +127,6 @@ struct AppOptions {
                 duration = TimeInterval(arguments[index + 1])
                 index += 2
             case "--profile" where index + 1 < arguments.count:
-                let raw = arguments[index + 1].lowercased()
-                profile = NativeProfile.all.first { $0.name.lowercased() == raw } ?? profile
                 index += 2
             case "--no-autostart":
                 autostart = false
@@ -416,7 +382,7 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
     }
 
     private static func handSearchRegion(around faceBox: CGRect) -> CGRect {
-        let side = min(1.0, max(faceBox.width, faceBox.height) * 3.0)
+        let side = min(1.0, max(faceBox.width, faceBox.height) * 5.0)
         let centerX = faceBox.midX
         let centerY = faceBox.midY
         return clampedNormalizedRect(
@@ -585,8 +551,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(statusMenuItem)
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Start Production", action: #selector(startProduction), keyEquivalent: ""))
-        menu.addItem(NSMenuItem(title: "Start Background", action: #selector(startBackground), keyEquivalent: ""))
-        menu.addItem(NSMenuItem(title: "Start Eco", action: #selector(startEco), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "Stop", action: #selector(stop), keyEquivalent: ""))
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Open Debug Preview", action: #selector(openDebugPreview), keyEquivalent: ""))
@@ -699,14 +663,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func startProduction() {
         start(.production)
-    }
-
-    @objc private func startBackground() {
-        start(.background)
-    }
-
-    @objc private func startEco() {
-        start(.eco)
     }
 
     @objc private func stop() {

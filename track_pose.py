@@ -230,34 +230,6 @@ PROFILES = {
         "preview": True,
         "debug_body": False,
     },
-    "background": {
-        "width": 640,
-        "height": 360,
-        "camera_fps": 6.0,
-        "max_dimension": 384,
-        "max_hands": 1,
-        "target_fps": 6.0,
-        "trigger_frames": 4,
-        "trigger_seconds": 0.3,
-        "process_every": 1,
-        "presence_gate": True,
-        "preview": False,
-        "debug_body": False,
-    },
-    "eco": {
-        "width": 480,
-        "height": 270,
-        "camera_fps": 3.0,
-        "max_dimension": 320,
-        "max_hands": 1,
-        "target_fps": 3.0,
-        "trigger_frames": 3,
-        "trigger_seconds": 0.3,
-        "process_every": 1,
-        "presence_gate": True,
-        "preview": False,
-        "debug_body": False,
-    },
     "production": {
         "width": 640,
         "height": 360,
@@ -424,6 +396,19 @@ def estimate_head_zone(face: FaceBox, head_scale: float, stale: bool = False) ->
     return HeadZone(center=(cx, cy), radius_x=radius_x, radius_y=radius_y, face_box=face, stale=stale)
 
 
+def estimate_hand_roi(face: FaceBox, frame_width: int, frame_height: int, scale: float = 5.0) -> tuple[int, int, int, int]:
+    side = min(float(max(frame_width, frame_height)), max(face.width, face.height) * scale)
+    cx, cy = face.center
+    x1 = max(0.0, min(float(frame_width) - side, cx - side * 0.5))
+    y1 = max(0.0, min(float(frame_height) - side, cy - side * 0.5))
+    return (
+        int(round(x1)),
+        int(round(y1)),
+        int(round(x1 + side)),
+        int(round(y1 + side)),
+    )
+
+
 def distance_between(a: Landmark | None, b: Landmark | None) -> float:
     if a is None or b is None:
         return 0.0
@@ -567,6 +552,8 @@ def draw_overlay(
     if face is not None:
         x1, y1, x2, y2 = face.xyxy
         cv2.rectangle(frame, (x1, y1), (x2, y2), (80, 255, 120), 1, cv2.LINE_AA)
+        rx1, ry1, rx2, ry2 = estimate_hand_roi(face, frame.shape[1], frame.shape[0], scale=5.0)
+        cv2.rectangle(frame, (rx1, ry1), (rx2, ry2), (80, 200, 255), 1, cv2.LINE_AA)
 
     if alert.head_zone is not None:
         center = tuple(int(round(v)) for v in alert.head_zone.center)
@@ -777,7 +764,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--profile",
         choices=sorted(PROFILES),
-        help="Apply a preset: debug, realtime, balanced, background, eco, or production.",
+        help="Apply a preset: debug, realtime, balanced, or production.",
     )
     parser.add_argument("--camera", type=int, default=0, help="OpenCV camera index.")
     parser.add_argument("--width", type=int, default=960, help="Requested camera width.")

@@ -13,13 +13,12 @@ open dist/BodyPoseTracker.app
 ```
 
 The app appears as a `Pose` item in the menu bar. It starts production detection
-automatically, can switch between Production / Background / Eco, and can stop or
-quit from the menu.
+automatically, and can stop, open the debug preview, or quit from the menu.
 
 Production mode runs face detection at `4 FPS`, hand detection at `8 FPS`,
 tracks at most one hand, and restricts hand pose to a square region centered on
-the detected head. The square side is `3x` the detected head size, so the search
-area is about `9x` the head area.
+the detected head. The square side is `5x` the detected head size, so the search
+area is about `25x` the head area before it is clamped to the camera frame.
 
 Warnings play the bundled `iMovie-Alarm.mp3` by default. You can override it
 with `--alert-sound /path/to/sound.mp3`, or use `--no-alert-sound` to fall back
@@ -58,7 +57,6 @@ Other Python profiles:
 
 ```bash
 .venv/bin/python track_pose.py --profile production --beep
-.venv/bin/python track_pose.py --profile eco --beep
 ```
 
 Stop the Python tracker:
@@ -95,11 +93,8 @@ scripts/build-menubar-app.sh
 - `--no-preview` keeps detection/beeps running without drawing a camera window.
 - `--alert-sound /path/to/sound.mp3` plays a custom warning sound.
 - `--profile debug` uses the visual preview plus body-pose overlay for
-  diagnosis.
-- `--profile background` uses `640x360`, one-hand detection, a `0.3s` trigger,
-  presence-gated hand inference, and no preview window.
-- `--profile eco` uses `480x270`, one-hand detection, a `0.3s` trigger,
-  presence-gated hand inference, and no preview window.
+  diagnosis. The green box is the face rectangle, the blue ellipse is the
+  warning zone, and the orange square is the production hand-search ROI.
 - `--profile production` is the recommended always-on mode: no preview,
   one-hand detection, `0.3s` trigger, and presence-gated hand inference.
 - `--debug-body` also runs/draws body pose landmarks for diagnosis.
@@ -109,6 +104,4 @@ scripts/build-menubar-app.sh
 | Profile | Purpose | Preview | Body Pose | Face / Hand FPS |
 | --- | --- | --- | --- | --- |
 | Swift Production | menu-bar always-on mode | no | no | 4 / 8 |
-| Swift Background | lighter menu-bar mode | no | no | 3 / 6 |
-| Swift Eco | lowest-power menu-bar mode | no | no | 2 / 3 |
 | Python Debug | visual diagnosis | yes | optional | configurable |
