@@ -42,7 +42,7 @@ Visual legend:
 - Green rectangle: detected face.
 - Blue/red ellipse: active head warning zone.
 - Cyan points/lines: hand landmarks from Apple Vision.
-- Bottom label: current profile, measured processing FPS, camera FPS, target
+- Bottom label: current detection config, measured processing FPS, camera FPS, target
   face/hand FPS, hand counts, streak, score, and delay.
 
 ## Logs

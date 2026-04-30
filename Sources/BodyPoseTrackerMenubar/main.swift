@@ -36,7 +36,7 @@ private func defaultAlertSoundURL() -> URL? {
     return nil
 }
 
-struct NativeProfile {
+struct DetectionConfig {
     let name: String
     let cameraFPS: Double
     let faceFPS: Double
@@ -50,7 +50,7 @@ struct NativeProfile {
         max(faceFPS, handFPS)
     }
 
-    static let production = NativeProfile(
+    static let production = DetectionConfig(
         name: "Production",
         cameraFPS: 10,
         faceFPS: 2,
@@ -133,7 +133,7 @@ struct DebugFrame {
     let face: FaceBox?
     let hands: [[String: Landmark]]
     let state: HairAlertState
-    let profile: NativeProfile
+    let config: DetectionConfig
     let appliedCameraFPS: Double?
     let observedProcessingFPS: Double
 }
@@ -295,12 +295,12 @@ final class DebugPreviewView: NSView {
         let pointCount = frameData.hands.reduce(0) { $0 + $1.count }
         let line1 = String(
             format: "%@ | fps %.1f | cam %@ | face %.0f | hand %.0f | delay %.1fs",
-            frameData.profile.name,
+            frameData.config.name,
             frameData.observedProcessingFPS,
             cameraFPS,
-            frameData.profile.faceFPS,
-            frameData.profile.handFPS,
-            frameData.profile.triggerSeconds
+            frameData.config.faceFPS,
+            frameData.config.handFPS,
+            frameData.config.triggerSeconds
         )
         let line2 = String(
             format: "face %@ | hands %d/%d pts %d | streak %d | score %@",
@@ -373,11 +373,11 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
     private let alertSoundURL: URL?
     private var debugFrameHandler: ((DebugFrame) -> Void)?
 
-    private var profile = NativeProfile.production
+    private var config = DetectionConfig.production
     private var detector = HairPickingDetector(
-        triggerSeconds: NativeProfile.production.triggerSeconds,
-        headScale: NativeProfile.production.headScale,
-        faceHoldSeconds: NativeProfile.production.faceHoldSeconds
+        triggerSeconds: DetectionConfig.production.triggerSeconds,
+        headScale: DetectionConfig.production.headScale,
+        faceHoldSeconds: DetectionConfig.production.faceHoldSeconds
     )
     private var lastProcessAt = Date.distantPast.timeIntervalSinceReferenceDate
     private var lastFaceProcessAt = Date.distantPast.timeIntervalSinceReferenceDate
@@ -408,13 +408,13 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
         configureAlertSound()
     }
 
-    func start(profile: NativeProfile) {
+    func start(config: DetectionConfig) {
         captureQueue.async {
-            self.profile = profile
+            self.config = config
             self.detector = HairPickingDetector(
-                triggerSeconds: profile.triggerSeconds,
-                headScale: profile.headScale,
-                faceHoldSeconds: profile.faceHoldSeconds
+                triggerSeconds: config.triggerSeconds,
+                headScale: config.headScale,
+                faceHoldSeconds: config.faceHoldSeconds
             )
             self.lastProcessAt = Date.distantPast.timeIntervalSinceReferenceDate
             self.lastFaceProcessAt = Date.distantPast.timeIntervalSinceReferenceDate
@@ -428,7 +428,7 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
             self.latestHands = []
             self.latestState = .empty
             self.alertWasActive = false
-            self.handRequest.maximumHandCount = profile.maxHands
+            self.handRequest.maximumHandCount = config.maxHands
 
             do {
                 if !self.configured {
@@ -440,10 +440,10 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
                 }
                 self.isRunning = true
                 self.log.write(
-                    "started profile=\(profile.name) faceFPS=\(profile.faceFPS) handFPS=\(profile.handFPS) " +
-                        "cameraFPS=\(profile.cameraFPS) maxHands=\(profile.maxHands) triggerSeconds=\(profile.triggerSeconds)"
+                    "started config=\(config.name) faceFPS=\(config.faceFPS) handFPS=\(config.handFPS) " +
+                        "cameraFPS=\(config.cameraFPS) maxHands=\(config.maxHands) triggerSeconds=\(config.triggerSeconds)"
                 )
-                self.publishStatus("Running \(profile.name)", state: .empty, force: true)
+                self.publishStatus("Running \(config.name)", state: .empty, force: true)
             } catch {
                 self.log.write("start failed: \(error.localizedDescription)")
                 DispatchQueue.main.async {
@@ -505,7 +505,7 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
     }
 
     private func configureCameraFrameRate(_ device: AVCaptureDevice) {
-        guard profile.cameraFPS > 0 else { return }
+        guard config.cameraFPS > 0 else { return }
 
         let ranges = device.activeFormat.videoSupportedFrameRateRanges
         guard !ranges.isEmpty else {
@@ -513,7 +513,7 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
             return
         }
 
-        let targetFPS = profile.cameraFPS
+        let targetFPS = config.cameraFPS
         let compatibleRange = ranges.first { range in
             range.minFrameRate <= targetFPS && targetFPS <= range.maxFrameRate
         } ?? ranges.min { lhs, rhs in
@@ -561,7 +561,7 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
         from connection: AVCaptureConnection
     ) {
         let now = Date.timeIntervalSinceReferenceDate
-        if now - lastProcessAt < 1.0 / profile.processingFPS {
+        if now - lastProcessAt < 1.0 / config.processingFPS {
             return
         }
         lastProcessAt = now
@@ -570,8 +570,8 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
         let width = CVPixelBufferGetWidth(pixelBuffer)
         let height = CVPixelBufferGetHeight(pixelBuffer)
 
-        let runFace = now - lastFaceProcessAt >= 1.0 / profile.faceFPS
-        let runHands = recentFace(now: now) != nil && now - lastHandProcessAt >= 1.0 / profile.handFPS
+        let runFace = now - lastFaceProcessAt >= 1.0 / config.faceFPS
+        let runHands = recentFace(now: now) != nil && now - lastHandProcessAt >= 1.0 / config.handFPS
         guard runFace || runHands else { return }
 
         var requests: [VNRequest] = []
@@ -600,7 +600,7 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
                 stateForFrame = state
                 updateAlertSound(state: state, now: now)
                 maybeLog(state: state, hands: hands, now: now)
-                let label = state.active ? "Hand Near Head" : "Running \(profile.name)"
+                let label = state.active ? "Hand Near Head" : "Running \(config.name)"
                 publishStatus(label, state: state)
             } else if face == nil {
                 let state = detector.update(face: nil, hands: [], now: now)
@@ -650,7 +650,7 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
                 face: face,
                 hands: hands,
                 state: state,
-                profile: profile,
+                config: config,
                 appliedCameraFPS: appliedCameraFPS,
                 observedProcessingFPS: observedFPS
             )
@@ -711,7 +711,7 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
     }
 
     private func recentFace(now: TimeInterval) -> FaceBox? {
-        guard let latestFace, now - lastFaceObservationAt <= profile.faceHoldSeconds else {
+        guard let latestFace, now - lastFaceObservationAt <= config.faceHoldSeconds else {
             return nil
         }
         return latestFace
@@ -812,7 +812,7 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
         let usableHands = hands.filter { !$0.isEmpty }.count
         let pointCount = hands.reduce(0) { $0 + $1.count }
         log.write(
-            "status profile=\(profile.name) face=\(state.faceSeen) hands=\(usableHands) rawHands=\(hands.count) points=\(pointCount) streak=\(state.streak) " +
+            "status config=\(config.name) face=\(state.faceSeen) hands=\(usableHands) rawHands=\(hands.count) points=\(pointCount) streak=\(state.streak) " +
                 "active=\(state.active) score=\(score)"
         )
     }
@@ -832,7 +832,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         setupStatusItem()
-        log.write("menubar app launched profile=\(NativeProfile.production.name)")
+        log.write("menubar app launched config=\(DetectionConfig.production.name)")
 
         controller = VisionCaptureController(log: log, alertSoundURL: options.alertSoundURL) { [weak self] status, state in
             self?.updateStatus(status, state: state)
@@ -945,7 +945,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    private func start(_ profile: NativeProfile) {
+    private func start(_ config: DetectionConfig) {
         productionWanted = true
         updateStatus("Checking Camera", state: .empty)
         requestCameraAccess { [weak self] granted in
@@ -961,8 +961,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self.updateStatus("Camera Permission Denied", state: .empty)
                 return
             }
-            self.log.write("camera permission granted; starting capture profile=\(profile.name)")
-            self.controller?.start(profile: profile)
+            self.log.write("camera permission granted; starting capture config=\(config.name)")
+            self.controller?.start(config: config)
         }
     }
 
