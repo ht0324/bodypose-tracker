@@ -17,6 +17,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         ("us.zoom.xos", "Zoom"),
         ("com.apple.FaceTime", "FaceTime")
     ]
+    // Matched to the bundled iMovie alarm envelope: roughly one 0.22s beep every 0.68s.
+    private let alertFlashPeriod: TimeInterval = 0.68
+    private let alertFlashOnDuration: TimeInterval = 0.22
     private let options = AppOptions.parse(arguments: CommandLine.arguments)
     private lazy var log = FileLog(url: defaultLogURL())
     private var statusItem: NSStatusItem?
@@ -33,6 +36,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var workspaceObservers: [NSObjectProtocol] = []
     private var distributedObservers: [NSObjectProtocol] = []
     private var pauseReconcileTimer: Timer?
+    private var alertFlashTimer: Timer?
+    private var alertFlashOffWorkItem: DispatchWorkItem?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -77,6 +82,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         distributedObservers = []
         stopPauseReconcileTimer()
+        stopAlertIconFlash()
         log.write("applicationWillTerminate")
     }
 
@@ -574,13 +580,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         statusMenuItem.title = "Status: \(status)"
         updateProductionToggleMenuItem(status: status)
         if state.active {
-            configureStatusButton(
-                statusItem?.button,
-                symbolName: "hand.raised.fill",
-                accessibilityDescription: "Hand Near Head",
-                tint: .systemRed
-            )
+            startAlertIconFlash()
         } else if status == "Stopped" {
+            stopAlertIconFlash()
             configureStatusButton(
                 statusItem?.button,
                 symbolName: "hand.raised.slash",
@@ -588,6 +590,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 tint: nil
             )
         } else {
+            stopAlertIconFlash()
             configureStatusButton(
                 statusItem?.button,
                 symbolName: "hand.raised",
@@ -626,7 +629,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         productionStartPending = false
         stopPauseReconcileTimer()
         syncProductionToggleMenuItem()
+        stopAlertIconFlash()
         controller?.stop()
+    }
+
+    private func startAlertIconFlash() {
+        guard alertFlashTimer == nil else { return }
+        pulseAlertIcon()
+        alertFlashTimer = Timer.scheduledTimer(withTimeInterval: alertFlashPeriod, repeats: true) { [weak self] _ in
+            self?.pulseAlertIcon()
+        }
+        alertFlashTimer?.tolerance = 0.04
+    }
+
+    private func stopAlertIconFlash() {
+        alertFlashTimer?.invalidate()
+        alertFlashTimer = nil
+        alertFlashOffWorkItem?.cancel()
+        alertFlashOffWorkItem = nil
+    }
+
+    private func pulseAlertIcon() {
+        setAlertIconVisible(true)
+
+        alertFlashOffWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            self?.setAlertIconVisible(false)
+        }
+        alertFlashOffWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + alertFlashOnDuration, execute: workItem)
+    }
+
+    private func setAlertIconVisible(_ visible: Bool) {
+        configureStatusButton(
+            statusItem?.button,
+            symbolName: visible ? "hand.raised.fill" : "hand.raised",
+            accessibilityDescription: visible ? "Hand Near Head" : "BodyPoseTracker",
+            tint: visible ? .systemRed : nil
+        )
     }
 
     @objc private func toggleDebugPreview() {

@@ -52,7 +52,9 @@ landmarks enter the blue/red head warning zone.
 
 Warnings play the bundled `iMovie-Alarm.mp3` by default. You can override it
 with `--alert-sound /path/to/sound.mp3`, or use `--no-alert-sound` to fall back
-to the system beep. The bundled sound stops as soon as the warning clears.
+to the system beep. The bundled sound stops as soon as the warning clears. While
+the warning is active, the menu-bar icon flashes red at the bundled alarm's
+approximate beep cadence.
 
 ## Native Debug Preview
 
