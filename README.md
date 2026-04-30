@@ -57,7 +57,7 @@ state, and score.
 ## Short Test Run
 
 ```bash
-open dist/BodyPoseTracker.app --args --duration 10 --profile production
+open dist/BodyPoseTracker.app --args --duration 10
 ```
 
 Stop the app:

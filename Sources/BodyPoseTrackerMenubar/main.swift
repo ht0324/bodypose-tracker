@@ -45,7 +45,6 @@ struct NativeProfile {
     let triggerSeconds: TimeInterval
     let headScale: Double
     let faceHoldSeconds: TimeInterval
-    let presenceGate: Bool
 
     var processingFPS: Double {
         max(faceFPS, handFPS)
@@ -59,8 +58,7 @@ struct NativeProfile {
         maxHands: 1,
         triggerSeconds: 0.3,
         headScale: 1.4,
-        faceHoldSeconds: 1.0,
-        presenceGate: true
+        faceHoldSeconds: 1.0
     )
 }
 
@@ -93,13 +91,11 @@ final class FileLog {
 
 struct AppOptions {
     let duration: TimeInterval?
-    let profile: NativeProfile
     let autostart: Bool
     let alertSoundURL: URL?
 
     static func parse(arguments: [String]) -> AppOptions {
         var duration: TimeInterval?
-        let profile = NativeProfile.production
         var autostart = true
         var alertSoundURL = defaultAlertSoundURL()
         var index = 1
@@ -108,8 +104,6 @@ struct AppOptions {
             switch arguments[index] {
             case "--duration" where index + 1 < arguments.count:
                 duration = TimeInterval(arguments[index + 1])
-                index += 2
-            case "--profile" where index + 1 < arguments.count:
                 index += 2
             case "--no-autostart":
                 autostart = false
@@ -127,7 +121,6 @@ struct AppOptions {
 
         return AppOptions(
             duration: duration,
-            profile: profile,
             autostart: autostart,
             alertSoundURL: alertSoundURL
         )
@@ -578,8 +571,7 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
         let height = CVPixelBufferGetHeight(pixelBuffer)
 
         let runFace = now - lastFaceProcessAt >= 1.0 / profile.faceFPS
-        let runHands = (!profile.presenceGate || recentFace(now: now) != nil) &&
-            now - lastHandProcessAt >= 1.0 / profile.handFPS
+        let runHands = recentFace(now: now) != nil && now - lastHandProcessAt >= 1.0 / profile.handFPS
         guard runFace || runHands else { return }
 
         var requests: [VNRequest] = []
@@ -840,14 +832,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         setupStatusItem()
-        log.write("menubar app launched profile=\(options.profile.name)")
+        log.write("menubar app launched profile=\(NativeProfile.production.name)")
 
         controller = VisionCaptureController(log: log, alertSoundURL: options.alertSoundURL) { [weak self] status, state in
             self?.updateStatus(status, state: state)
         }
 
         if options.autostart {
-            start(options.profile)
+            start(.production)
         } else {
             updateStatus("Stopped", state: .empty)
         }

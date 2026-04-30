@@ -75,11 +75,6 @@ public final class HairPickingDetector {
         self.faceHoldSeconds = faceHoldSeconds
     }
 
-    public func hasRecentFace(now: TimeInterval) -> Bool {
-        guard lastFace != nil else { return false }
-        return now - lastFaceAt <= faceHoldSeconds
-    }
-
     public func update(face: FaceBox?, hands: [[String: Landmark]], now: TimeInterval) -> HairAlertState {
         let faceSeen = face != nil
         let usableFace: FaceBox
