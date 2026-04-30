@@ -8,7 +8,7 @@ import Vision
 
 private let bundledAlertSoundName = "iMovie-Alarm"
 private let bundledAlertSoundExtension = "mp3"
-private let useVisionHandRegionOfInterest = true
+private let useVisionHandRegionOfInterest = false
 private let plannedHandROIScale: CGFloat = 4.0
 
 private var projectAlertSoundURL: URL {
@@ -338,12 +338,16 @@ final class DebugPreviewView: NSView {
         } else {
             roiLabel = "Vision ROI full frame"
         }
-        let planned = frameData.plannedHandROI == nil ? "4x ROI unavailable" : "orange active 4x ROI"
+        let planned = frameData.plannedHandROI == nil ? "4x zone unavailable" : "orange decision 4x zone"
+        let usableHands = frameData.hands.filter { !$0.isEmpty }.count
+        let pointCount = frameData.hands.reduce(0) { $0 + $1.count }
         let text = String(
-            format: "Profile %@ | face %@ | hands %d | streak %d | score %@ | %@ | %@ | delay %.1fs",
+            format: "Profile %@ | face %@ | hands %d/%d pts %d | streak %d | score %@ | %@ | %@ | delay %.1fs",
             frameData.profile.name,
             frameData.face == nil ? "no" : "yes",
+            usableHands,
             frameData.hands.count,
+            pointCount,
             frameData.state.streak,
             score,
             roiLabel,
@@ -840,8 +844,10 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
         let score = state.zoneScore.map { String(format: "%.2f", $0) } ?? "-"
         let roi = recentHandRegionOfInterest(now: now)
         let visionROI = useVisionHandRegionOfInterest ? String(format: "%.2f,%.2f,%.2f,%.2f", roi.origin.x, roi.origin.y, roi.width, roi.height) : "full"
+        let usableHands = hands.filter { !$0.isEmpty }.count
+        let pointCount = hands.reduce(0) { $0 + $1.count }
         log.write(
-            "status profile=\(profile.name) face=\(state.faceSeen) hands=\(hands.count) streak=\(state.streak) " +
+            "status profile=\(profile.name) face=\(state.faceSeen) hands=\(usableHands) rawHands=\(hands.count) points=\(pointCount) streak=\(state.streak) " +
                 "active=\(state.active) score=\(score) visionROI=\(visionROI) plannedROI=\(String(format: "%.2f,%.2f,%.2f,%.2f", roi.origin.x, roi.origin.y, roi.width, roi.height))"
         )
     }
