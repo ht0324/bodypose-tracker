@@ -852,9 +852,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private lazy var log = FileLog(url: defaultLogURL())
     private var statusItem: NSStatusItem?
     private var statusMenuItem = NSMenuItem(title: "Starting...", action: nil, keyEquivalent: "")
+    private var productionToggleMenuItem = NSMenuItem(title: "Start Production", action: nil, keyEquivalent: "")
     private var debugPreviewMenuItem = NSMenuItem(title: "Show Debug Preview", action: nil, keyEquivalent: "")
     private var controller: VisionCaptureController?
     private var debugPreviewWindow: DebugPreviewWindowController?
+    private var productionWanted = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -900,8 +902,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusMenuItem.isEnabled = false
         menu.addItem(statusMenuItem)
         menu.addItem(.separator())
-        menu.addItem(NSMenuItem(title: "Start Production", action: #selector(startProduction), keyEquivalent: ""))
-        menu.addItem(NSMenuItem(title: "Stop", action: #selector(stop), keyEquivalent: ""))
+        productionToggleMenuItem.action = #selector(toggleProduction)
+        menu.addItem(productionToggleMenuItem)
         menu.addItem(.separator())
         debugPreviewMenuItem.action = #selector(toggleDebugPreview)
         menu.addItem(debugPreviewMenuItem)
@@ -973,10 +975,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func start(_ profile: NativeProfile) {
+        productionWanted = true
         updateStatus("Checking Camera", state: .empty)
         requestCameraAccess { [weak self] granted in
             guard let self else { return }
+            guard self.productionWanted else {
+                self.log.write("production start canceled before camera startup")
+                self.updateStatus("Stopped", state: .empty)
+                return
+            }
             guard granted else {
+                self.productionWanted = false
                 self.log.write("camera permission denied")
                 self.updateStatus("Camera Permission Denied", state: .empty)
                 return
@@ -988,6 +997,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func updateStatus(_ status: String, state: HairAlertState) {
         statusMenuItem.title = "Status: \(status)"
+        updateProductionToggleTitle(status: status)
         if state.active {
             configureStatusButton(
                 statusItem?.button,
@@ -1012,11 +1022,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    @objc private func startProduction() {
-        start(.production)
+    private func updateProductionToggleTitle(status: String) {
+        switch status {
+        case "Stopped", "Camera Permission Denied", "Start failed":
+            productionWanted = false
+            productionToggleMenuItem.title = "Start Production"
+        default:
+            productionToggleMenuItem.title = "Stop Production"
+        }
     }
 
-    @objc private func stop() {
+    @objc private func toggleProduction() {
+        if productionWanted || controller?.isRunning == true {
+            stopProduction()
+        } else {
+            start(.production)
+        }
+    }
+
+    private func stopProduction() {
+        productionWanted = false
         controller?.stop()
     }
 
@@ -1048,7 +1073,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         preview.showWindow(nil)
         NSApp.activate(ignoringOtherApps: true)
 
-        if controller?.isRunning != true {
+        if !productionWanted && controller?.isRunning != true {
             start(.production)
         }
     }
@@ -1056,7 +1081,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func quit() {
         controller?.setDebugFrameHandler(nil)
         debugPreviewWindow?.close()
-        controller?.stop()
+        stopProduction()
         NSApp.terminate(nil)
     }
 }
