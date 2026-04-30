@@ -38,6 +38,7 @@ private func defaultAlertSoundURL() -> URL? {
 
 struct DetectionConfig {
     let name: String
+    let capturePreset: AVCaptureSession.Preset
     let cameraFPS: Double
     let faceFPS: Double
     let idleHandFPS: Double
@@ -54,6 +55,7 @@ struct DetectionConfig {
 
     static let production = DetectionConfig(
         name: "Production",
+        capturePreset: .cif352x288,
         cameraFPS: 10,
         faceFPS: 2,
         idleHandFPS: 4,
@@ -312,7 +314,9 @@ final class DebugPreviewView: NSView {
             frameData.config.triggerSeconds
         )
         let line2 = String(
-            format: "face %@ | hands %d/%d pts %d | streak %d | score %@",
+            format: "size %.0fx%.0f | face %@ | hands %d/%d pts %d | streak %d | score %@",
+            frameData.imageSize.width,
+            frameData.imageSize.height,
             frameData.face == nil ? "no" : "yes",
             usableHands,
             frameData.hands.count,
@@ -393,6 +397,8 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
     private var lastHandProcessAt = Date.distantPast.timeIntervalSinceReferenceDate
     private var lastFaceObservationAt = Date.distantPast.timeIntervalSinceReferenceDate
     private var lastHandObservationAt = Date.distantPast.timeIntervalSinceReferenceDate
+    private var lastFrameWidth = 0
+    private var lastFrameHeight = 0
     private var latestFace: FaceBox?
     private var lastLogAt = Date.distantPast.timeIntervalSinceReferenceDate
     private var lastBeepAt = Date.distantPast.timeIntervalSinceReferenceDate
@@ -432,6 +438,8 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
             self.lastHandProcessAt = Date.distantPast.timeIntervalSinceReferenceDate
             self.lastFaceObservationAt = Date.distantPast.timeIntervalSinceReferenceDate
             self.lastHandObservationAt = Date.distantPast.timeIntervalSinceReferenceDate
+            self.lastFrameWidth = 0
+            self.lastFrameHeight = 0
             self.latestFace = nil
             self.lastBeepAt = Date.distantPast.timeIntervalSinceReferenceDate
             self.lastPublishedStatus = nil
@@ -452,7 +460,7 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
                 }
                 self.isRunning = true
                 self.log.write(
-                    "started config=\(config.name) faceFPS=\(config.faceFPS) idleHandFPS=\(config.idleHandFPS) " +
+                    "started config=\(config.name) preset=\(config.capturePreset.rawValue) faceFPS=\(config.faceFPS) idleHandFPS=\(config.idleHandFPS) " +
                         "activeHandFPS=\(config.activeHandFPS) cameraFPS=\(config.cameraFPS) maxHands=\(config.maxHands) " +
                         "triggerSeconds=\(config.triggerSeconds) handBoostHoldSeconds=\(config.handBoostHoldSeconds)"
                 )
@@ -493,7 +501,7 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
 
     private func configureSession() throws {
         session.beginConfiguration()
-        session.sessionPreset = .vga640x480
+        configureSessionPreset()
 
         guard let device = AVCaptureDevice.default(for: .video) else {
             throw NSError(domain: "BodyPoseTracker", code: 1, userInfo: [NSLocalizedDescriptionKey: "No video camera found"])
@@ -516,6 +524,21 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
         configureConnectionFrameRate(output)
 
         session.commitConfiguration()
+    }
+
+    private func configureSessionPreset() {
+        if session.canSetSessionPreset(config.capturePreset) {
+            session.sessionPreset = config.capturePreset
+            log.write("session preset requested=\(config.capturePreset.rawValue) applied=\(session.sessionPreset.rawValue)")
+            return
+        }
+
+        if session.canSetSessionPreset(.vga640x480) {
+            session.sessionPreset = .vga640x480
+            log.write("session preset requested=\(config.capturePreset.rawValue) unsupported; applied=\(session.sessionPreset.rawValue)")
+        } else {
+            log.write("session preset requested=\(config.capturePreset.rawValue) unsupported; using default=\(session.sessionPreset.rawValue)")
+        }
     }
 
     private func configureCameraFrameRate(_ device: AVCaptureDevice) {
@@ -618,6 +641,7 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
         let width = CVPixelBufferGetWidth(pixelBuffer)
         let height = CVPixelBufferGetHeight(pixelBuffer)
+        logFrameSizeIfNeeded(width: width, height: height)
 
         let runFace = now - lastFaceProcessAt >= 1.0 / config.faceFPS
         let handFPS = targetHandFPS(now: now)
@@ -719,6 +743,13 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
         let recentlySawHand = now - lastHandObservationAt <= config.handBoostHoldSeconds
         let shouldBoost = recentlySawHand || latestState.active || latestState.streak > 0
         return shouldBoost ? config.activeHandFPS : config.idleHandFPS
+    }
+
+    private func logFrameSizeIfNeeded(width: Int, height: Int) {
+        guard width != lastFrameWidth || height != lastFrameHeight else { return }
+        lastFrameWidth = width
+        lastFrameHeight = height
+        log.write("video frame size width=\(width) height=\(height)")
     }
 
     private func updateObservedDebugFPS(now: TimeInterval) -> Double {
