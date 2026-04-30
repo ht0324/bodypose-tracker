@@ -9,6 +9,7 @@ import Vision
 private let bundledAlertSoundName = "iMovie-Alarm"
 private let bundledAlertSoundExtension = "mp3"
 private let useVisionHandRegionOfInterest = false
+private let plannedHandROIScale: CGFloat = 4.0
 
 private var projectAlertSoundURL: URL {
     URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
@@ -59,7 +60,7 @@ struct NativeProfile {
         name: "Production",
         cameraWidth: 640,
         cameraHeight: 360,
-        faceFPS: 4,
+        faceFPS: 2,
         handFPS: 8,
         maxDimension: 480,
         maxHands: 1,
@@ -337,7 +338,7 @@ final class DebugPreviewView: NSView {
         } else {
             roiLabel = "Vision ROI full frame"
         }
-        let planned = frameData.plannedHandROI == nil ? "planned 5x unavailable" : "orange planned 5x head square"
+        let planned = frameData.plannedHandROI == nil ? "planned 4x unavailable" : "orange planned 4x head square"
         let text = String(
             format: "Profile %@ | face %@ | hands %d | streak %d | score %@ | %@ | %@ | delay %.1fs",
             frameData.profile.name,
@@ -713,7 +714,7 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
     }
 
     private static func handSearchRegion(around faceBox: CGRect) -> CGRect {
-        let side = min(1.0, max(faceBox.width, faceBox.height) * 5.0)
+        let side = min(1.0, max(faceBox.width, faceBox.height) * plannedHandROIScale)
         let centerX = faceBox.midX
         let centerY = faceBox.midY
         return clampedNormalizedRect(

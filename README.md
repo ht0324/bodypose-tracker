@@ -18,12 +18,12 @@ automatically, and the menu can stop, restart, open the debug preview, or quit.
 
 ## Production Detection
 
-Production runs face detection at `4 FPS`, hand detection at `8 FPS`, tracks at
+Production runs face detection at `2 FPS`, hand detection at `8 FPS`, tracks at
 most one hand, and requires the hand to remain near the head for `0.3s` before
 the warning becomes active.
 
 The app computes a planned square hand-search region centered on the detected
-head. The square side is `5x` the detected head size before it is clamped to the
+head. The square side is `4x` the detected head size before it is clamped to the
 camera frame. Hand pose currently still runs on the full frame for reliability;
 the planned square is drawn and logged so the ROI can be tuned against the exact
 production feed before re-enabling Vision ROI cropping.
@@ -42,7 +42,7 @@ Visual legend:
 - Green rectangle: detected face.
 - Blue/red ellipse: active head warning zone.
 - Cyan points/lines: hand landmarks from Apple Vision.
-- Orange square: planned `5x` head-centered hand-search ROI.
+- Orange square: planned `4x` head-centered hand-search ROI.
 - Bottom label: current profile, face/hand counts, streak, score, delay, and
   whether Vision hand detection is full frame or ROI-cropped.
 
