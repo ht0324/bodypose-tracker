@@ -40,21 +40,25 @@ struct DetectionConfig {
     let name: String
     let cameraFPS: Double
     let faceFPS: Double
-    let handFPS: Double
+    let idleHandFPS: Double
+    let activeHandFPS: Double
+    let handBoostHoldSeconds: TimeInterval
     let maxHands: Int
     let triggerSeconds: TimeInterval
     let headScale: Double
     let faceHoldSeconds: TimeInterval
 
     var processingFPS: Double {
-        max(faceFPS, handFPS)
+        max(faceFPS, activeHandFPS)
     }
 
     static let production = DetectionConfig(
         name: "Production",
         cameraFPS: 10,
         faceFPS: 2,
-        handFPS: 8,
+        idleHandFPS: 4,
+        activeHandFPS: 8,
+        handBoostHoldSeconds: 1.5,
         maxHands: 1,
         triggerSeconds: 0.3,
         headScale: 1.4,
@@ -135,6 +139,8 @@ struct DebugFrame {
     let state: HairAlertState
     let config: DetectionConfig
     let appliedCameraFPS: Double?
+    let appliedConnectionFPS: Double?
+    let targetHandFPS: Double
     let observedProcessingFPS: Double
 }
 
@@ -291,15 +297,18 @@ final class DebugPreviewView: NSView {
     private func drawStatus(_ frameData: DebugFrame, imageRect: CGRect) {
         let score = frameData.state.zoneScore.map { String(format: "%.2f", $0) } ?? "-"
         let cameraFPS = frameData.appliedCameraFPS.map { String(format: "%.0f", $0) } ?? "-"
+        let connectionFPS = frameData.appliedConnectionFPS.map { String(format: "%.0f", $0) } ?? "-"
         let usableHands = frameData.hands.filter { !$0.isEmpty }.count
         let pointCount = frameData.hands.reduce(0) { $0 + $1.count }
         let line1 = String(
-            format: "%@ | fps %.1f | cam %@ | face %.0f | hand %.0f | delay %.1fs",
+            format: "%@ | fps %.1f | cam %@/%@ | face %.0f | hand %.0f/%.0f | delay %.1fs",
             frameData.config.name,
             frameData.observedProcessingFPS,
             cameraFPS,
+            connectionFPS,
             frameData.config.faceFPS,
-            frameData.config.handFPS,
+            frameData.targetHandFPS,
+            frameData.config.activeHandFPS,
             frameData.config.triggerSeconds
         )
         let line2 = String(
@@ -383,6 +392,7 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
     private var lastFaceProcessAt = Date.distantPast.timeIntervalSinceReferenceDate
     private var lastHandProcessAt = Date.distantPast.timeIntervalSinceReferenceDate
     private var lastFaceObservationAt = Date.distantPast.timeIntervalSinceReferenceDate
+    private var lastHandObservationAt = Date.distantPast.timeIntervalSinceReferenceDate
     private var latestFace: FaceBox?
     private var lastLogAt = Date.distantPast.timeIntervalSinceReferenceDate
     private var lastBeepAt = Date.distantPast.timeIntervalSinceReferenceDate
@@ -390,6 +400,7 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
     private var lastPublishedActive: Bool?
     private var debugFrameTimes: [TimeInterval] = []
     private var appliedCameraFPS: Double?
+    private var appliedConnectionFPS: Double?
     private var latestHands: [[String: Landmark]] = []
     private var latestState = HairAlertState.empty
     private var alertWasActive = false
@@ -420,6 +431,7 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
             self.lastFaceProcessAt = Date.distantPast.timeIntervalSinceReferenceDate
             self.lastHandProcessAt = Date.distantPast.timeIntervalSinceReferenceDate
             self.lastFaceObservationAt = Date.distantPast.timeIntervalSinceReferenceDate
+            self.lastHandObservationAt = Date.distantPast.timeIntervalSinceReferenceDate
             self.latestFace = nil
             self.lastBeepAt = Date.distantPast.timeIntervalSinceReferenceDate
             self.lastPublishedStatus = nil
@@ -440,8 +452,9 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
                 }
                 self.isRunning = true
                 self.log.write(
-                    "started config=\(config.name) faceFPS=\(config.faceFPS) handFPS=\(config.handFPS) " +
-                        "cameraFPS=\(config.cameraFPS) maxHands=\(config.maxHands) triggerSeconds=\(config.triggerSeconds)"
+                    "started config=\(config.name) faceFPS=\(config.faceFPS) idleHandFPS=\(config.idleHandFPS) " +
+                        "activeHandFPS=\(config.activeHandFPS) cameraFPS=\(config.cameraFPS) maxHands=\(config.maxHands) " +
+                        "triggerSeconds=\(config.triggerSeconds) handBoostHoldSeconds=\(config.handBoostHoldSeconds)"
                 )
                 self.publishStatus("Running \(config.name)", state: .empty, force: true)
             } catch {
@@ -500,6 +513,7 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
             throw NSError(domain: "BodyPoseTracker", code: 3, userInfo: [NSLocalizedDescriptionKey: "Cannot add video output"])
         }
         session.addOutput(output)
+        configureConnectionFrameRate(output)
 
         session.commitConfiguration()
     }
@@ -544,6 +558,41 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
         }
     }
 
+    private func configureConnectionFrameRate(_ output: AVCaptureVideoDataOutput) {
+        guard config.cameraFPS > 0 else { return }
+        guard let connection = output.connection(with: .video) else {
+            log.write("connection frame duration unavailable: no video connection")
+            return
+        }
+
+        let roundedFPS = max(1, Int32(config.cameraFPS.rounded()))
+        let frameDuration = CMTime(value: 1, timescale: roundedFPS)
+        var applied = false
+
+        if connection.isVideoMinFrameDurationSupported {
+            connection.videoMinFrameDuration = frameDuration
+            applied = true
+        }
+        if connection.isVideoMaxFrameDurationSupported {
+            connection.videoMaxFrameDuration = frameDuration
+            applied = true
+        }
+
+        if applied {
+            appliedConnectionFPS = Double(roundedFPS)
+            log.write(
+                String(
+                    format: "connection frame duration targetFPS=%.1f appliedFPS=%d",
+                    config.cameraFPS,
+                    roundedFPS
+                )
+            )
+        } else {
+            appliedConnectionFPS = nil
+            log.write("connection frame duration unsupported")
+        }
+    }
+
     private func publishStatus(_ status: String, state: HairAlertState, force: Bool = false) {
         guard force || lastPublishedStatus != status || lastPublishedActive != state.active else {
             return
@@ -571,7 +620,8 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
         let height = CVPixelBufferGetHeight(pixelBuffer)
 
         let runFace = now - lastFaceProcessAt >= 1.0 / config.faceFPS
-        let runHands = recentFace(now: now) != nil && now - lastHandProcessAt >= 1.0 / config.handFPS
+        let handFPS = targetHandFPS(now: now)
+        let runHands = recentFace(now: now) != nil && now - lastHandProcessAt >= 1.0 / handFPS
         guard runFace || runHands else { return }
 
         var requests: [VNRequest] = []
@@ -594,6 +644,9 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
             if runHands {
                 let hands = recognizedHands(width: width, height: height)
                 let state = detector.update(face: face, hands: hands, now: now)
+                if hands.contains(where: { !$0.isEmpty }) {
+                    lastHandObservationAt = now
+                }
                 latestHands = hands
                 latestState = state
                 handsForFrame = hands
@@ -604,6 +657,7 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
                 publishStatus(label, state: state)
             } else if face == nil {
                 let state = detector.update(face: nil, hands: [], now: now)
+                lastHandObservationAt = Date.distantPast.timeIntervalSinceReferenceDate
                 latestHands = []
                 latestState = state
                 handsForFrame = []
@@ -619,6 +673,7 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
                 face: face,
                 hands: handsForFrame,
                 state: stateForFrame,
+                targetHandFPS: targetHandFPS(now: now),
                 now: now
             )
         } catch {
@@ -636,6 +691,7 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
         face: FaceBox?,
         hands: [[String: Landmark]],
         state: HairAlertState,
+        targetHandFPS: Double,
         now: TimeInterval
     ) {
         guard let debugFrameHandler else { return }
@@ -652,9 +708,17 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
                 state: state,
                 config: config,
                 appliedCameraFPS: appliedCameraFPS,
+                appliedConnectionFPS: appliedConnectionFPS,
+                targetHandFPS: targetHandFPS,
                 observedProcessingFPS: observedFPS
             )
         )
+    }
+
+    private func targetHandFPS(now: TimeInterval) -> Double {
+        let recentlySawHand = now - lastHandObservationAt <= config.handBoostHoldSeconds
+        let shouldBoost = recentlySawHand || latestState.active || latestState.streak > 0
+        return shouldBoost ? config.activeHandFPS : config.idleHandFPS
     }
 
     private func updateObservedDebugFPS(now: TimeInterval) -> Double {
@@ -809,11 +873,12 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
         guard now - lastLogAt >= 2.0 else { return }
         lastLogAt = now
         let score = state.zoneScore.map { String(format: "%.2f", $0) } ?? "-"
+        let handFPS = String(format: "%.0f", targetHandFPS(now: now))
         let usableHands = hands.filter { !$0.isEmpty }.count
         let pointCount = hands.reduce(0) { $0 + $1.count }
         log.write(
             "status config=\(config.name) face=\(state.faceSeen) hands=\(usableHands) rawHands=\(hands.count) points=\(pointCount) streak=\(state.streak) " +
-                "active=\(state.active) score=\(score)"
+                "handFPS=\(handFPS) active=\(state.active) score=\(score)"
         )
     }
 }

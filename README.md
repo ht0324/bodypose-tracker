@@ -19,10 +19,11 @@ automatically, and the menu can stop, restart, open the debug preview, or quit.
 ## Production Detection
 
 Production requests a lower camera capture cadence, runs face detection at
-`2 FPS`, runs hand detection at `8 FPS`, tracks at most one hand, and requires
+`2 FPS`, idles hand detection at `4 FPS`, boosts hand detection to `8 FPS`
+while a hand or near-warning is recent, tracks at most one hand, and requires
 the hand to remain near the head for `0.3s` before the warning becomes active.
-The camera may clamp the requested `10 FPS` capture cadence to the nearest
-supported format.
+The app requests `10 FPS` at both the camera device and video connection layers;
+macOS may still clamp the physical camera format to the nearest supported rate.
 
 Hand pose runs full-frame because Apple Vision hand pose is less stable when
 cropped to a moving ROI. The detector only alerts when high-confidence hand
@@ -42,8 +43,8 @@ Visual legend:
 - Green rectangle: detected face.
 - Blue/red ellipse: active head warning zone.
 - Cyan points/lines: hand landmarks from Apple Vision.
-- Bottom label: current detection config, measured processing FPS, camera FPS, target
-  face/hand FPS, hand counts, streak, score, and delay.
+- Bottom label: current detection config, measured processing FPS, camera/connection
+  FPS, target face/hand FPS, hand counts, streak, score, and delay.
 
 ## Logs
 
@@ -51,8 +52,8 @@ Visual legend:
 tail -f ~/Library/Logs/BodyPoseTracker/BodyPoseTracker.log
 ```
 
-Log lines include face/hand counts, usable landmark count, streak, active
-state, and score.
+Log lines include face/hand counts, usable landmark count, adaptive hand FPS,
+streak, active state, and score.
 
 ## Short Test Run
 
