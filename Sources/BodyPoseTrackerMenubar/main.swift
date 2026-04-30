@@ -7,6 +7,7 @@ import Vision
 
 private let bundledAlertSoundName = "iMovie-Alarm"
 private let bundledAlertSoundExtension = "mp3"
+private let useVisionHandRegionOfInterest = false
 
 private func projectRootURL() -> URL? {
     let currentDirectory = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
@@ -172,6 +173,7 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
     private var lastFaceProcessAt = Date.distantPast.timeIntervalSinceReferenceDate
     private var lastHandProcessAt = Date.distantPast.timeIntervalSinceReferenceDate
     private var lastFaceObservationAt = Date.distantPast.timeIntervalSinceReferenceDate
+    private var latestFace: FaceBox?
     private var lastLogAt = Date.distantPast.timeIntervalSinceReferenceDate
     private var lastBeepAt = Date.distantPast.timeIntervalSinceReferenceDate
     private var handRegionOfInterest = VNNormalizedIdentityRect
@@ -202,6 +204,7 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
             self.lastFaceProcessAt = Date.distantPast.timeIntervalSinceReferenceDate
             self.lastHandProcessAt = Date.distantPast.timeIntervalSinceReferenceDate
             self.lastFaceObservationAt = Date.distantPast.timeIntervalSinceReferenceDate
+            self.latestFace = nil
             self.lastBeepAt = Date.distantPast.timeIntervalSinceReferenceDate
             self.handRegionOfInterest = VNNormalizedIdentityRect
             self.alertWasActive = false
@@ -288,7 +291,7 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
         let height = CVPixelBufferGetHeight(pixelBuffer)
 
         let runFace = now - lastFaceProcessAt >= 1.0 / profile.faceFPS
-        let runHands = (!profile.presenceGate || detector.hasRecentFace(now: now)) &&
+        let runHands = (!profile.presenceGate || recentFace(now: now) != nil) &&
             now - lastHandProcessAt >= 1.0 / profile.handFPS
         guard runFace || runHands else { return }
 
@@ -298,21 +301,28 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
             lastFaceProcessAt = now
         }
         if runHands {
-            handRequest.regionOfInterest = recentHandRegionOfInterest(now: now)
+            handRequest.regionOfInterest = useVisionHandRegionOfInterest ? recentHandRegionOfInterest(now: now) : VNNormalizedIdentityRect
             requests.append(handRequest)
             lastHandProcessAt = now
         }
 
         do {
             try sequenceHandler.perform(requests, on: sampleBuffer, orientation: .up)
-            let face = runFace ? updateFaceState(width: width, height: height, now: now) : nil
+            let detectedFace = runFace ? updateFaceState(width: width, height: height, now: now) : nil
+            let face = detectedFace ?? recentFace(now: now)
             let hands = runHands ? recognizedHands(width: width, height: height, regionOfInterest: handRequest.regionOfInterest) : []
-            let state = detector.update(face: face, hands: hands, now: now)
-            updateAlertSound(state: state, now: now)
-            maybeLog(state: state, hands: hands, now: now)
-            DispatchQueue.main.async {
-                let label = state.active ? "Hand Near Head" : "Running \(self.profile.name)"
-                self.onStatus(label, state)
+            if runHands {
+                let state = detector.update(face: face, hands: hands, now: now)
+                updateAlertSound(state: state, now: now)
+                maybeLog(state: state, hands: hands, now: now)
+                DispatchQueue.main.async {
+                    let label = state.active ? "Hand Near Head" : "Running \(self.profile.name)"
+                    self.onStatus(label, state)
+                }
+            } else if face == nil {
+                let state = detector.update(face: nil, hands: [], now: now)
+                updateAlertSound(state: state, now: now)
+                maybeLog(state: state, hands: [], now: now)
             }
         } catch {
             if now - lastLogAt > 2.0 {
@@ -324,6 +334,7 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
 
     private func updateFaceState(width: Int, height: Int, now: TimeInterval) -> FaceBox? {
         guard let best = bestFace(width: width, height: height) else { return nil }
+        latestFace = best.face
         handRegionOfInterest = Self.handSearchRegion(around: best.normalizedBox)
         lastFaceObservationAt = now
         return best.face
@@ -379,6 +390,13 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
             return VNNormalizedIdentityRect
         }
         return handRegionOfInterest
+    }
+
+    private func recentFace(now: TimeInterval) -> FaceBox? {
+        guard let latestFace, now - lastFaceObservationAt <= profile.faceHoldSeconds else {
+            return nil
+        }
+        return latestFace
     }
 
     private static func handSearchRegion(around faceBox: CGRect) -> CGRect {
@@ -492,9 +510,10 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
         lastLogAt = now
         let score = state.zoneScore.map { String(format: "%.2f", $0) } ?? "-"
         let roi = recentHandRegionOfInterest(now: now)
+        let visionROI = useVisionHandRegionOfInterest ? String(format: "%.2f,%.2f,%.2f,%.2f", roi.origin.x, roi.origin.y, roi.width, roi.height) : "full"
         log.write(
             "status profile=\(profile.name) face=\(state.faceSeen) hands=\(hands.count) streak=\(state.streak) " +
-                "active=\(state.active) score=\(score) roi=\(String(format: "%.2f,%.2f,%.2f,%.2f", roi.origin.x, roi.origin.y, roi.width, roi.height))"
+                "active=\(state.active) score=\(score) visionROI=\(visionROI) plannedROI=\(String(format: "%.2f,%.2f,%.2f,%.2f", roi.origin.x, roi.origin.y, roi.width, roi.height))"
         )
     }
 }
