@@ -1,5 +1,0 @@
-opencv-python==4.13.0.92
-pyobjc-framework-AVFoundation==12.1
-pyobjc-framework-Cocoa==12.1
-pyobjc-framework-Quartz==12.1
-pyobjc-framework-Vision==12.1

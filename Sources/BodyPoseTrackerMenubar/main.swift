@@ -1,6 +1,7 @@
 import AppKit
 import AVFoundation
 import BodyPoseTrackerCore
+import CoreImage
 import CoreMedia
 import Foundation
 import Vision
@@ -9,20 +10,8 @@ private let bundledAlertSoundName = "iMovie-Alarm"
 private let bundledAlertSoundExtension = "mp3"
 private let useVisionHandRegionOfInterest = false
 
-private func projectRootURL() -> URL? {
-    let currentDirectory = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
-    let homeProject = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent("Documents")
-        .appendingPathComponent("Projects")
-        .appendingPathComponent("bodypose-tracker")
-
-    return [currentDirectory, homeProject].first { candidate in
-        FileManager.default.fileExists(atPath: candidate.appendingPathComponent("track_pose.py").path)
-    }
-}
-
 private var projectAlertSoundURL: URL {
-    (projectRootURL() ?? URL(fileURLWithPath: FileManager.default.currentDirectoryPath))
+    URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
         .appendingPathComponent("Resources")
         .appendingPathComponent("\(bundledAlertSoundName).\(bundledAlertSoundExtension)")
 }
@@ -152,15 +141,274 @@ struct AppOptions {
     }
 }
 
+struct DebugFrame {
+    let image: CGImage
+    let imageSize: CGSize
+    let face: FaceBox?
+    let hands: [[String: Landmark]]
+    let state: HairAlertState
+    let plannedHandROI: CGRect?
+    let visionHandROI: CGRect
+    let visionROIEnabled: Bool
+    let profile: NativeProfile
+}
+
+final class DebugPreviewView: NSView {
+    private static let handEdges: [(String, String)] = [
+        ("wrist", "thumb_cmc"),
+        ("thumb_cmc", "thumb_mp"),
+        ("thumb_mp", "thumb_ip"),
+        ("thumb_ip", "thumb_tip"),
+        ("wrist", "index_mcp"),
+        ("index_mcp", "index_pip"),
+        ("index_pip", "index_dip"),
+        ("index_dip", "index_tip"),
+        ("wrist", "middle_mcp"),
+        ("middle_mcp", "middle_pip"),
+        ("middle_pip", "middle_dip"),
+        ("middle_dip", "middle_tip"),
+        ("wrist", "ring_mcp"),
+        ("ring_mcp", "ring_pip"),
+        ("ring_pip", "ring_dip"),
+        ("ring_dip", "ring_tip"),
+        ("wrist", "little_mcp"),
+        ("little_mcp", "little_pip"),
+        ("little_pip", "little_dip"),
+        ("little_dip", "little_tip")
+    ]
+
+    var frameData: DebugFrame? {
+        didSet {
+            needsDisplay = true
+        }
+    }
+
+    override var wantsUpdateLayer: Bool {
+        false
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        NSColor.black.setFill()
+        bounds.fill()
+
+        guard let frameData else {
+            drawCenteredMessage("Waiting for camera frames...")
+            return
+        }
+
+        let imageRect = fittedImageRect(imageSize: frameData.imageSize)
+        NSImage(cgImage: frameData.image, size: frameData.imageSize).draw(in: imageRect)
+
+        drawPlannedROI(frameData.plannedHandROI, imageSize: frameData.imageSize, imageRect: imageRect)
+        drawFace(frameData.face, imageRect: imageRect)
+        drawHeadZone(frameData.state.headZone, active: frameData.state.active, imageRect: imageRect)
+        drawHands(frameData.hands, imageRect: imageRect)
+        drawStatus(frameData, imageRect: imageRect)
+    }
+
+    private func drawCenteredMessage(_ message: String) {
+        let attributes: [NSAttributedString.Key: Any] = [
+            .foregroundColor: NSColor.white.withAlphaComponent(0.72),
+            .font: NSFont.monospacedSystemFont(ofSize: 14, weight: .regular)
+        ]
+        let attributed = NSAttributedString(string: message, attributes: attributes)
+        let size = attributed.size()
+        attributed.draw(
+            at: CGPoint(
+                x: bounds.midX - size.width * 0.5,
+                y: bounds.midY - size.height * 0.5
+            )
+        )
+    }
+
+    private func fittedImageRect(imageSize: CGSize) -> CGRect {
+        guard imageSize.width > 0, imageSize.height > 0 else { return bounds }
+        let scale = min(bounds.width / imageSize.width, bounds.height / imageSize.height)
+        let width = imageSize.width * scale
+        let height = imageSize.height * scale
+        return CGRect(
+            x: bounds.midX - width * 0.5,
+            y: bounds.midY - height * 0.5,
+            width: width,
+            height: height
+        )
+    }
+
+    private func projectTopLeftRect(_ rect: CGRect, into imageRect: CGRect) -> CGRect {
+        let scale = imageRect.width / max(1, frameData?.imageSize.width ?? 1)
+        return CGRect(
+            x: imageRect.minX + rect.origin.x * scale,
+            y: imageRect.maxY - (rect.origin.y + rect.height) * scale,
+            width: rect.width * scale,
+            height: rect.height * scale
+        ).integral
+    }
+
+    private func point(fromTopLeftImagePoint point: Landmark, imageRect: CGRect) -> CGPoint {
+        let scale = imageRect.width / max(1, frameData?.imageSize.width ?? 1)
+        return CGPoint(
+            x: imageRect.minX + point.x * scale,
+            y: imageRect.maxY - point.y * scale
+        )
+    }
+
+    private func normalizedVisionRect(_ rect: CGRect, imageSize: CGSize, imageRect: CGRect) -> CGRect {
+        let topLeftRect = CGRect(
+            x: rect.origin.x * imageSize.width,
+            y: (1.0 - rect.origin.y - rect.height) * imageSize.height,
+            width: rect.width * imageSize.width,
+            height: rect.height * imageSize.height
+        )
+        return projectTopLeftRect(topLeftRect, into: imageRect)
+    }
+
+    private func drawPlannedROI(_ roi: CGRect?, imageSize: CGSize, imageRect: CGRect) {
+        guard let roi else { return }
+        let rect = normalizedVisionRect(roi, imageSize: imageSize, imageRect: imageRect)
+        NSColor.systemOrange.withAlphaComponent(0.9).setStroke()
+        let path = NSBezierPath(rect: rect)
+        path.lineWidth = 2
+        path.stroke()
+    }
+
+    private func drawFace(_ face: FaceBox?, imageRect: CGRect) {
+        guard let face else { return }
+        let rect = projectTopLeftRect(
+            CGRect(x: face.x, y: face.y, width: face.width, height: face.height),
+            into: imageRect
+        )
+        NSColor.systemGreen.withAlphaComponent(0.95).setStroke()
+        let path = NSBezierPath(rect: rect)
+        path.lineWidth = 2
+        path.stroke()
+    }
+
+    private func drawHeadZone(_ zone: HeadZone?, active: Bool, imageRect: CGRect) {
+        guard let zone else { return }
+        let rect = projectTopLeftRect(
+            CGRect(
+                x: zone.centerX - zone.radiusX,
+                y: zone.centerY - zone.radiusY,
+                width: zone.radiusX * 2,
+                height: zone.radiusY * 2
+            ),
+            into: imageRect
+        )
+        let color: NSColor = active ? .systemRed : (zone.stale ? .systemGray : .systemBlue)
+        color.withAlphaComponent(0.95).setStroke()
+        let path = NSBezierPath(ovalIn: rect)
+        path.lineWidth = active ? 4 : 3
+        path.stroke()
+    }
+
+    private func drawHands(_ hands: [[String: Landmark]], imageRect: CGRect) {
+        for hand in hands {
+            NSColor.systemCyan.withAlphaComponent(0.92).setStroke()
+            for (start, end) in Self.handEdges {
+                guard let a = hand[start], let b = hand[end] else { continue }
+                let path = NSBezierPath()
+                path.move(to: point(fromTopLeftImagePoint: a, imageRect: imageRect))
+                path.line(to: point(fromTopLeftImagePoint: b, imageRect: imageRect))
+                path.lineWidth = 2
+                path.stroke()
+            }
+
+            NSColor.systemCyan.setFill()
+            for landmark in hand.values {
+                let center = point(fromTopLeftImagePoint: landmark, imageRect: imageRect)
+                NSBezierPath(
+                    ovalIn: CGRect(x: center.x - 3, y: center.y - 3, width: 6, height: 6)
+                ).fill()
+            }
+        }
+    }
+
+    private func drawStatus(_ frameData: DebugFrame, imageRect: CGRect) {
+        let score = frameData.state.zoneScore.map { String(format: "%.2f", $0) } ?? "-"
+        let roiLabel: String
+        if frameData.visionROIEnabled {
+            roiLabel = String(
+                format: "Vision ROI %.2f,%.2f %.2fx%.2f",
+                frameData.visionHandROI.origin.x,
+                frameData.visionHandROI.origin.y,
+                frameData.visionHandROI.width,
+                frameData.visionHandROI.height
+            )
+        } else {
+            roiLabel = "Vision ROI full frame"
+        }
+        let planned = frameData.plannedHandROI == nil ? "planned 5x unavailable" : "orange planned 5x head square"
+        let text = String(
+            format: "Profile %@ | face %@ | hands %d | streak %d | score %@ | %@ | %@ | delay %.1fs",
+            frameData.profile.name,
+            frameData.face == nil ? "no" : "yes",
+            frameData.hands.count,
+            frameData.state.streak,
+            score,
+            roiLabel,
+            planned,
+            frameData.profile.triggerSeconds
+        )
+
+        let barHeight: CGFloat = 30
+        let barRect = CGRect(x: imageRect.minX, y: imageRect.minY, width: imageRect.width, height: barHeight)
+        NSColor.black.withAlphaComponent(0.78).setFill()
+        barRect.fill()
+
+        let attributes: [NSAttributedString.Key: Any] = [
+            .foregroundColor: NSColor.white.withAlphaComponent(0.92),
+            .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .medium)
+        ]
+        NSAttributedString(string: text, attributes: attributes).draw(
+            in: barRect.insetBy(dx: 10, dy: 7)
+        )
+    }
+}
+
+final class DebugPreviewWindowController: NSWindowController, NSWindowDelegate {
+    private let previewView = DebugPreviewView(frame: CGRect(x: 0, y: 0, width: 960, height: 620))
+    var onClose: (() -> Void)?
+
+    init() {
+        let window = NSWindow(
+            contentRect: CGRect(x: 0, y: 0, width: 960, height: 620),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "BodyPoseTracker Debug Preview"
+        window.minSize = NSSize(width: 640, height: 420)
+        window.contentView = previewView
+        super.init(window: window)
+        window.delegate = self
+        window.center()
+    }
+
+    required init?(coder: NSCoder) {
+        return nil
+    }
+
+    func update(frame: DebugFrame) {
+        previewView.frameData = frame
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        onClose?()
+        onClose = nil
+    }
+}
+
 final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
     private let session = AVCaptureSession()
     private let captureQueue = DispatchQueue(label: "BodyPoseTracker.capture", qos: .userInitiated)
     private let sequenceHandler = VNSequenceRequestHandler()
+    private let ciContext = CIContext()
     private let faceRequest = VNDetectFaceRectanglesRequest()
     private let handRequest = VNDetectHumanHandPoseRequest()
     private let log: FileLog
     private let onStatus: (String, HairAlertState) -> Void
     private let alertSoundURL: URL?
+    private var debugFrameHandler: ((DebugFrame) -> Void)?
 
     private var profile = NativeProfile.production
     private var detector = HairPickingDetector(
@@ -177,6 +425,8 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
     private var lastLogAt = Date.distantPast.timeIntervalSinceReferenceDate
     private var lastBeepAt = Date.distantPast.timeIntervalSinceReferenceDate
     private var handRegionOfInterest = VNNormalizedIdentityRect
+    private var latestHands: [[String: Landmark]] = []
+    private var latestState = HairAlertState.empty
     private var alertWasActive = false
     private var configured = false
     private var alertPlayer: AVAudioPlayer?
@@ -207,6 +457,8 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
             self.latestFace = nil
             self.lastBeepAt = Date.distantPast.timeIntervalSinceReferenceDate
             self.handRegionOfInterest = VNNormalizedIdentityRect
+            self.latestHands = []
+            self.latestState = .empty
             self.alertWasActive = false
             self.handRequest.maximumHandCount = profile.maxHands
 
@@ -242,11 +494,19 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
             }
             self.isRunning = false
             self.alertWasActive = false
+            self.latestHands = []
+            self.latestState = .empty
             self.stopAlertSound()
             self.log.write("stopped")
             DispatchQueue.main.async {
                 self.onStatus("Stopped", .empty)
             }
+        }
+    }
+
+    func setDebugFrameHandler(_ handler: ((DebugFrame) -> Void)?) {
+        captureQueue.async {
+            self.debugFrameHandler = handler
         }
     }
 
@@ -310,9 +570,16 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
             try sequenceHandler.perform(requests, on: sampleBuffer, orientation: .up)
             let detectedFace = runFace ? updateFaceState(width: width, height: height, now: now) : nil
             let face = detectedFace ?? recentFace(now: now)
-            let hands = runHands ? recognizedHands(width: width, height: height, regionOfInterest: handRequest.regionOfInterest) : []
+            var handsForFrame = latestHands
+            var stateForFrame = latestState
+
             if runHands {
+                let hands = recognizedHands(width: width, height: height, regionOfInterest: handRequest.regionOfInterest)
                 let state = detector.update(face: face, hands: hands, now: now)
+                latestHands = hands
+                latestState = state
+                handsForFrame = hands
+                stateForFrame = state
                 updateAlertSound(state: state, now: now)
                 maybeLog(state: state, hands: hands, now: now)
                 DispatchQueue.main.async {
@@ -321,15 +588,61 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
                 }
             } else if face == nil {
                 let state = detector.update(face: nil, hands: [], now: now)
+                latestHands = []
+                latestState = state
+                handsForFrame = []
+                stateForFrame = state
                 updateAlertSound(state: state, now: now)
                 maybeLog(state: state, hands: [], now: now)
             }
+
+            let plannedROI = face == nil ? nil : recentHandRegionOfInterest(now: now)
+            let visionROI = useVisionHandRegionOfInterest ? (plannedROI ?? VNNormalizedIdentityRect) : VNNormalizedIdentityRect
+            emitDebugFrame(
+                pixelBuffer: pixelBuffer,
+                width: width,
+                height: height,
+                face: face,
+                hands: handsForFrame,
+                state: stateForFrame,
+                plannedROI: plannedROI,
+                visionROI: visionROI
+            )
         } catch {
             if now - lastLogAt > 2.0 {
                 lastLogAt = now
                 log.write("vision error: \(error.localizedDescription)")
             }
         }
+    }
+
+    private func emitDebugFrame(
+        pixelBuffer: CVPixelBuffer,
+        width: Int,
+        height: Int,
+        face: FaceBox?,
+        hands: [[String: Landmark]],
+        state: HairAlertState,
+        plannedROI: CGRect?,
+        visionROI: CGRect
+    ) {
+        guard let debugFrameHandler else { return }
+        let image = CIImage(cvPixelBuffer: pixelBuffer)
+        let imageRect = CGRect(x: 0, y: 0, width: width, height: height)
+        guard let cgImage = ciContext.createCGImage(image, from: imageRect) else { return }
+        debugFrameHandler(
+            DebugFrame(
+                image: cgImage,
+                imageSize: CGSize(width: width, height: height),
+                face: face,
+                hands: hands,
+                state: state,
+                plannedHandROI: plannedROI,
+                visionHandROI: visionROI,
+                visionROIEnabled: useVisionHandRegionOfInterest,
+                profile: profile
+            )
+        )
     }
 
     private func updateFaceState(width: Int, height: Int, now: TimeInterval) -> FaceBox? {
@@ -445,10 +758,25 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
     private func handLabel(_ joint: VNHumanHandPoseObservation.JointName) -> String? {
         switch joint {
         case .wrist: return "wrist"
+        case .thumbCMC: return "thumb_cmc"
+        case .thumbMP: return "thumb_mp"
+        case .thumbIP: return "thumb_ip"
         case .thumbTip: return "thumb_tip"
+        case .indexMCP: return "index_mcp"
+        case .indexPIP: return "index_pip"
+        case .indexDIP: return "index_dip"
         case .indexTip: return "index_tip"
+        case .middleMCP: return "middle_mcp"
+        case .middlePIP: return "middle_pip"
+        case .middleDIP: return "middle_dip"
         case .middleTip: return "middle_tip"
+        case .ringMCP: return "ring_mcp"
+        case .ringPIP: return "ring_pip"
+        case .ringDIP: return "ring_dip"
         case .ringTip: return "ring_tip"
+        case .littleMCP: return "little_mcp"
+        case .littlePIP: return "little_pip"
+        case .littleDIP: return "little_dip"
         case .littleTip: return "little_tip"
         default: return nil
         }
@@ -523,7 +851,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private lazy var log = FileLog(url: defaultLogURL())
     private var statusItem: NSStatusItem?
     private var statusMenuItem = NSMenuItem(title: "Starting...", action: nil, keyEquivalent: "")
+    private var debugPreviewMenuItem = NSMenuItem(title: "Show Debug Preview", action: nil, keyEquivalent: "")
     private var controller: VisionCaptureController?
+    private var debugPreviewWindow: DebugPreviewWindowController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -572,7 +902,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(NSMenuItem(title: "Start Production", action: #selector(startProduction), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "Stop", action: #selector(stop), keyEquivalent: ""))
         menu.addItem(.separator())
-        menu.addItem(NSMenuItem(title: "Open Debug Preview", action: #selector(openDebugPreview), keyEquivalent: ""))
+        debugPreviewMenuItem.action = #selector(toggleDebugPreview)
+        menu.addItem(debugPreviewMenuItem)
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(title: "Quit", action: #selector(quit), keyEquivalent: "q"))
         item.menu = menu
@@ -688,41 +1019,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         controller?.stop()
     }
 
-    @objc private func openDebugPreview() {
-        controller?.stop()
-        guard let rootURL = projectRootURL() else {
-            log.write("debug preview unavailable: project root not found")
+    @objc private func toggleDebugPreview() {
+        if let debugPreviewWindow {
+            controller?.setDebugFrameHandler(nil)
+            debugPreviewWindow.close()
+            self.debugPreviewWindow = nil
+            debugPreviewMenuItem.title = "Show Debug Preview"
             return
         }
 
-        let pythonURL = rootURL
-            .appendingPathComponent(".venv")
-            .appendingPathComponent("bin")
-            .appendingPathComponent("python")
-        guard FileManager.default.fileExists(atPath: pythonURL.path) else {
-            log.write("debug preview unavailable: missing \(pythonURL.path)")
-            return
+        let preview = DebugPreviewWindowController()
+        debugPreviewWindow = preview
+        debugPreviewMenuItem.title = "Hide Debug Preview"
+        preview.onClose = { [weak self, weak preview] in
+            guard let self else { return }
+            if self.debugPreviewWindow === preview {
+                self.controller?.setDebugFrameHandler(nil)
+                self.debugPreviewWindow = nil
+                self.debugPreviewMenuItem.title = "Show Debug Preview"
+            }
         }
+        controller?.setDebugFrameHandler { [weak preview] frame in
+            DispatchQueue.main.async {
+                preview?.update(frame: frame)
+            }
+        }
+        preview.showWindow(nil)
+        NSApp.activate(ignoringOtherApps: true)
 
-        let task = Process()
-        task.currentDirectoryURL = rootURL
-        task.executableURL = pythonURL
-        task.environment = ProcessInfo.processInfo.environment.merging(
-            ["BODYPOSE_SKIP_PERMISSION": "1"],
-            uniquingKeysWith: { _, new in new }
-        )
-        task.arguments = [
-            rootURL.appendingPathComponent("track_pose.py").path,
-            "--profile",
-            "debug",
-            "--beep",
-            "--alert-sound",
-            projectAlertSoundURL.path
-        ]
-        try? task.run()
+        if controller?.isRunning != true {
+            start(.production)
+        }
     }
 
     @objc private func quit() {
+        controller?.setDebugFrameHandler(nil)
+        debugPreviewWindow?.close()
         controller?.stop()
         NSApp.terminate(nil)
     }
