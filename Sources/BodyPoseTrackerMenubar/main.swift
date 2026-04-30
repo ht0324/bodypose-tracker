@@ -2,8 +2,10 @@ import AppKit
 import AVFoundation
 import BodyPoseTrackerCore
 import CoreImage
+import CoreGraphics
 import CoreMedia
 import Foundation
+import ServiceManagement
 import Vision
 
 private let bundledAlertSoundName = "iMovie-Alarm"
@@ -425,7 +427,7 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
         configureAlertSound()
     }
 
-    func start(config: DetectionConfig) {
+    func start(config: DetectionConfig, completion: ((Bool) -> Void)? = nil) {
         captureQueue.async {
             self.config = config
             self.detector = HairPickingDetector(
@@ -465,10 +467,14 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
                         "triggerSeconds=\(config.triggerSeconds) handBoostHoldSeconds=\(config.handBoostHoldSeconds)"
                 )
                 self.publishStatus("Running \(config.name)", state: .empty, force: true)
+                DispatchQueue.main.async {
+                    completion?(true)
+                }
             } catch {
                 self.log.write("start failed: \(error.localizedDescription)")
                 DispatchQueue.main.async {
                     self.onStatus("Start failed", .empty)
+                    completion?(false)
                 }
             }
         }
@@ -915,7 +921,14 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
     }
 }
 
-final class AppDelegate: NSObject, NSApplicationDelegate {
+private enum SystemPauseReason: String, CaseIterable {
+    case sleep = "Sleep"
+    case displaySleep = "Display Sleep"
+    case locked = "Locked"
+    case screenSaver = "Screen Saver"
+}
+
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let pauseApps: [(bundleID: String, name: String)] = [
         ("us.zoom.xos", "Zoom"),
         ("com.apple.FaceTime", "FaceTime")
@@ -925,12 +938,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
     private var statusMenuItem = NSMenuItem(title: "Starting...", action: nil, keyEquivalent: "")
     private var productionToggleMenuItem = NSMenuItem(title: "Start Production", action: nil, keyEquivalent: "")
+    private var launchAtLoginMenuItem = NSMenuItem(title: "Launch at Login", action: nil, keyEquivalent: "")
     private var debugPreviewMenuItem = NSMenuItem(title: "Show Debug Preview", action: nil, keyEquivalent: "")
     private var controller: VisionCaptureController?
     private var debugPreviewWindow: DebugPreviewWindowController?
     private var productionWanted = false
+    private var productionStartPending = false
     private var runningPauseAppBundleIDs = Set<String>()
+    private var systemPauseReasons = Set<SystemPauseReason>()
     private var workspaceObservers: [NSObjectProtocol] = []
+    private var distributedObservers: [NSObjectProtocol] = []
     private var pauseReconcileTimer: Timer?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -942,6 +959,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.updateStatus(status, state: state)
         }
         setupPauseAppMonitoring()
+        setupSystemPauseMonitoring()
+        if let reason = pauseReason {
+            log.write("pause reasons already active reason=\(reason)")
+        }
 
         if options.autostart {
             start(.production)
@@ -967,8 +988,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NSWorkspace.shared.notificationCenter.removeObserver(observer)
         }
         workspaceObservers = []
+        for observer in distributedObservers {
+            DistributedNotificationCenter.default().removeObserver(observer)
+        }
+        distributedObservers = []
         stopPauseReconcileTimer()
         log.write("applicationWillTerminate")
+    }
+
+    func menuWillOpen(_ menu: NSMenu) {
+        syncLaunchAtLoginMenuItem()
     }
 
     private func setupStatusItem() {
@@ -980,11 +1009,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             tint: nil
         )
         let menu = NSMenu()
+        menu.delegate = self
         statusMenuItem.isEnabled = false
         menu.addItem(statusMenuItem)
         menu.addItem(.separator())
         productionToggleMenuItem.action = #selector(toggleProduction)
         menu.addItem(productionToggleMenuItem)
+        launchAtLoginMenuItem.action = #selector(toggleLaunchAtLogin)
+        syncLaunchAtLoginMenuItem()
+        menu.addItem(launchAtLoginMenuItem)
         menu.addItem(.separator())
         debugPreviewMenuItem.action = #selector(toggleDebugPreview)
         menu.addItem(debugPreviewMenuItem)
@@ -1036,6 +1069,56 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return configuredImage
     }
 
+    private func syncLaunchAtLoginMenuItem() {
+        let status = SMAppService.mainApp.status
+        launchAtLoginMenuItem.isEnabled = true
+        switch status {
+        case .enabled:
+            launchAtLoginMenuItem.title = "Launch at Login"
+            launchAtLoginMenuItem.state = .on
+        case .notRegistered:
+            launchAtLoginMenuItem.title = "Launch at Login"
+            launchAtLoginMenuItem.state = .off
+        case .requiresApproval:
+            launchAtLoginMenuItem.title = "Launch at Login (Needs Approval)"
+            launchAtLoginMenuItem.state = .mixed
+        case .notFound:
+            launchAtLoginMenuItem.title = "Launch at Login (Unavailable)"
+            launchAtLoginMenuItem.state = .off
+            launchAtLoginMenuItem.isEnabled = false
+        @unknown default:
+            launchAtLoginMenuItem.title = "Launch at Login"
+            launchAtLoginMenuItem.state = .off
+        }
+    }
+
+    @objc private func toggleLaunchAtLogin() {
+        let service = SMAppService.mainApp
+        let status = service.status
+
+        do {
+            switch status {
+            case .enabled:
+                try service.unregister()
+                log.write("launch at login disabled")
+            case .notRegistered, .notFound:
+                try service.register()
+                log.write("launch at login enabled")
+            case .requiresApproval:
+                log.write("launch at login requires approval; opening settings")
+                SMAppService.openSystemSettingsLoginItems()
+            @unknown default:
+                try service.register()
+                log.write("launch at login enabled from unknown status=\(status.rawValue)")
+            }
+        } catch {
+            log.write("launch at login toggle failed status=\(status.rawValue) error=\(error.localizedDescription)")
+            NSSound.beep()
+        }
+
+        syncLaunchAtLoginMenuItem()
+    }
+
     private func requestCameraAccess(_ completion: @escaping (Bool) -> Void) {
         let status = AVCaptureDevice.authorizationStatus(for: .video)
         log.write("camera authorization status before request=\(status.rawValue)")
@@ -1058,7 +1141,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func setupPauseAppMonitoring() {
         refreshRunningPauseApps()
         let notificationCenter = NSWorkspace.shared.notificationCenter
-        workspaceObservers = [
+        workspaceObservers += [
             notificationCenter.addObserver(
                 forName: NSWorkspace.didLaunchApplicationNotification,
                 object: nil,
@@ -1074,10 +1157,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.handleWorkspaceAppChange(notification, launched: false)
             }
         ]
-
-        if let reason = pauseReason {
-            log.write("pause apps already running reason=\(reason)")
-        }
     }
 
     private func refreshRunningPauseApps() {
@@ -1086,7 +1165,151 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NSWorkspace.shared.runningApplications
                 .compactMap(\.bundleIdentifier)
                 .filter { pauseBundleIDs.contains($0) }
-        )
+            )
+    }
+
+    private func setupSystemPauseMonitoring() {
+        _ = refreshObservableSystemPauseReasons(source: "startup")
+        let workspaceCenter = NSWorkspace.shared.notificationCenter
+        workspaceObservers += [
+            workspaceCenter.addObserver(
+                forName: NSWorkspace.willSleepNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                self?.setSystemPauseReason(.sleep, active: true, source: "will sleep")
+            },
+            workspaceCenter.addObserver(
+                forName: NSWorkspace.didWakeNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                self?.setSystemPauseReasons([.sleep, .displaySleep], active: false, source: "did wake")
+            },
+            workspaceCenter.addObserver(
+                forName: NSWorkspace.screensDidSleepNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                self?.setSystemPauseReason(.displaySleep, active: true, source: "screens did sleep")
+            },
+            workspaceCenter.addObserver(
+                forName: NSWorkspace.screensDidWakeNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                self?.setSystemPauseReason(.displaySleep, active: false, source: "screens did wake")
+            },
+            workspaceCenter.addObserver(
+                forName: NSWorkspace.sessionDidResignActiveNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                self?.setSystemPauseReason(.locked, active: true, source: "session did resign active")
+            },
+            workspaceCenter.addObserver(
+                forName: NSWorkspace.sessionDidBecomeActiveNotification,
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                self?.setSystemPauseReason(.locked, active: false, source: "session did become active")
+            }
+        ]
+
+        let distributedCenter = DistributedNotificationCenter.default()
+        distributedObservers = [
+            distributedCenter.addObserver(
+                forName: Notification.Name("com.apple.screenIsLocked"),
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                self?.setSystemPauseReason(.locked, active: true, source: "screen locked")
+            },
+            distributedCenter.addObserver(
+                forName: Notification.Name("com.apple.screenIsUnlocked"),
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                self?.setSystemPauseReason(.locked, active: false, source: "screen unlocked")
+            },
+            distributedCenter.addObserver(
+                forName: Notification.Name("com.apple.screensaver.didstart"),
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                self?.setSystemPauseReason(.screenSaver, active: true, source: "screen saver started")
+            },
+            distributedCenter.addObserver(
+                forName: Notification.Name("com.apple.screensaver.didstop"),
+                object: nil,
+                queue: .main
+            ) { [weak self] _ in
+                self?.setSystemPauseReason(.screenSaver, active: false, source: "screen saver stopped")
+            }
+        ]
+    }
+
+    private func refreshObservableSystemPauseReasons(source: String) -> Bool {
+        let previousReasons = systemPauseReasons
+        setSystemPauseReasonPresence(.locked, active: currentSessionIsLockedOrInactive())
+        setSystemPauseReasonPresence(.screenSaver, active: isScreenSaverRunning())
+        logSystemPauseChanges(previous: previousReasons, current: systemPauseReasons, source: source)
+        return previousReasons != systemPauseReasons
+    }
+
+    private func setSystemPauseReasons(_ reasons: [SystemPauseReason], active: Bool, source: String) {
+        let previousReasons = systemPauseReasons
+        for reason in reasons {
+            setSystemPauseReasonPresence(reason, active: active)
+        }
+        guard previousReasons != systemPauseReasons else { return }
+        logSystemPauseChanges(previous: previousReasons, current: systemPauseReasons, source: source)
+        reconcileProductionPause()
+    }
+
+    private func setSystemPauseReason(_ reason: SystemPauseReason, active: Bool, source: String) {
+        setSystemPauseReasons([reason], active: active, source: source)
+    }
+
+    private func setSystemPauseReasonPresence(_ reason: SystemPauseReason, active: Bool) {
+        if active {
+            systemPauseReasons.insert(reason)
+        } else {
+            systemPauseReasons.remove(reason)
+        }
+    }
+
+    private func currentSessionIsLockedOrInactive() -> Bool {
+        guard let sessionInfo = CGSessionCopyCurrentDictionary() as? [String: Any] else {
+            return false
+        }
+        let locked = sessionInfo["CGSSessionScreenIsLocked"] as? Bool == true
+        let onConsole = sessionInfo["kCGSSessionOnConsoleKey"] as? Bool ?? true
+        return locked || !onConsole
+    }
+
+    private func isScreenSaverRunning() -> Bool {
+        NSWorkspace.shared.runningApplications.contains { app in
+            app.bundleIdentifier == "com.apple.ScreenSaver.Engine" ||
+                app.localizedName?.localizedCaseInsensitiveContains("ScreenSaver") == true ||
+                app.executableURL?.lastPathComponent.localizedCaseInsensitiveContains("ScreenSaver") == true ||
+                app.bundleURL?.lastPathComponent.localizedCaseInsensitiveContains("ScreenSaver") == true
+        }
+    }
+
+    private func logSystemPauseChanges(previous: Set<SystemPauseReason>, current: Set<SystemPauseReason>, source: String) {
+        let started = current.subtracting(previous)
+        let ended = previous.subtracting(current)
+        for reason in orderedSystemPauseReasons(started) {
+            log.write("system pause started reason=\(reason.rawValue) source=\(source)")
+        }
+        for reason in orderedSystemPauseReasons(ended) {
+            log.write("system pause ended reason=\(reason.rawValue) source=\(source)")
+        }
+    }
+
+    private func orderedSystemPauseReasons(_ reasons: Set<SystemPauseReason>) -> [SystemPauseReason] {
+        SystemPauseReason.allCases.filter { reasons.contains($0) }
     }
 
     private func handleWorkspaceAppChange(_ notification: Notification, launched: Bool) {
@@ -1113,9 +1336,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private var pauseReason: String? {
-        let names = pauseApps.compactMap { app in
+        let appNames = pauseApps.compactMap { app in
             runningPauseAppBundleIDs.contains(app.bundleID) ? app.name : nil
         }
+        let systemNames = SystemPauseReason.allCases.compactMap { reason in
+            systemPauseReasons.contains(reason) ? reason.rawValue : nil
+        }
+        let names = appNames + systemNames
         return names.isEmpty ? nil : names.joined(separator: ", ")
     }
 
@@ -1129,9 +1356,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let reason = pauseReason {
             pauseProduction(reason: reason)
             startPauseReconcileTimerIfNeeded()
-        } else if controller?.isRunning != true {
+        } else if controller?.isRunning != true && !productionStartPending {
             stopPauseReconcileTimer()
-            log.write("pause apps cleared; resuming production")
+            log.write("pause reasons cleared; resuming production")
             start(.production)
         } else {
             stopPauseReconcileTimer()
@@ -1141,11 +1368,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func pauseProduction(reason: String) {
         startPauseReconcileTimerIfNeeded()
         let status = "Paused: \(reason)"
-        if controller?.isRunning == true {
+        if controller?.isRunning == true || productionStartPending {
             log.write("pausing production reason=\(reason)")
             controller?.stop(status: status) { [weak self] in
-                guard let self, self.productionWanted, self.pauseReason == nil else { return }
-                self.log.write("pause apps cleared during stop; resuming production")
+                guard let self else { return }
+                self.productionStartPending = false
+                guard self.productionWanted, self.pauseReason == nil else { return }
+                self.log.write("pause reasons cleared during stop; resuming production")
                 self.start(.production)
             }
         } else {
@@ -1166,13 +1395,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 return
             }
 
+            let previousPauseReason = self.pauseReason
             let previousBundleIDs = self.runningPauseAppBundleIDs
             self.refreshRunningPauseApps()
             let launchedBundleIDs = self.runningPauseAppBundleIDs.subtracting(previousBundleIDs)
             let terminatedBundleIDs = previousBundleIDs.subtracting(self.runningPauseAppBundleIDs)
             self.logPauseAppChanges(launchedBundleIDs: launchedBundleIDs, terminatedBundleIDs: terminatedBundleIDs)
+            let systemChanged = self.refreshObservableSystemPauseReasons(source: "pause timer")
+            let pauseReasonChanged = previousPauseReason != self.pauseReason
 
-            if !launchedBundleIDs.isEmpty || !terminatedBundleIDs.isEmpty || self.pauseReason == nil {
+            if !launchedBundleIDs.isEmpty ||
+                !terminatedBundleIDs.isEmpty ||
+                systemChanged ||
+                pauseReasonChanged ||
+                self.pauseReason == nil {
                 self.reconcileProductionPause()
             }
         }
@@ -1199,33 +1435,53 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func start(_ config: DetectionConfig) {
         productionWanted = true
+        guard controller?.isRunning != true else {
+            log.write("production start skipped; already running")
+            return
+        }
+        guard !productionStartPending else {
+            log.write("production start skipped; already pending")
+            return
+        }
         if let reason = pauseReason {
             log.write("production start deferred reason=\(reason)")
             pauseProduction(reason: reason)
             return
         }
 
+        productionStartPending = true
         updateStatus("Checking Camera", state: .empty)
         requestCameraAccess { [weak self] granted in
             guard let self else { return }
             guard self.productionWanted else {
+                self.productionStartPending = false
                 self.log.write("production start canceled before camera startup")
                 self.updateStatus("Stopped", state: .empty)
                 return
             }
             if let reason = self.pauseReason {
+                self.productionStartPending = false
                 self.log.write("production start deferred after camera check reason=\(reason)")
                 self.pauseProduction(reason: reason)
                 return
             }
             guard granted else {
+                self.productionStartPending = false
                 self.productionWanted = false
                 self.log.write("camera permission denied")
                 self.updateStatus("Camera Permission Denied", state: .empty)
                 return
             }
+            guard let controller = self.controller else {
+                self.productionStartPending = false
+                self.log.write("camera permission granted but controller unavailable")
+                self.updateStatus("Start failed", state: .empty)
+                return
+            }
             self.log.write("camera permission granted; starting capture config=\(config.name)")
-            self.controller?.start(config: config)
+            controller.start(config: config) { [weak self] _ in
+                self?.productionStartPending = false
+            }
         }
     }
 
@@ -1276,6 +1532,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func stopProduction() {
         productionWanted = false
+        productionStartPending = false
         stopPauseReconcileTimer()
         controller?.stop()
     }

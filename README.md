@@ -15,6 +15,8 @@ open dist/BodyPoseTracker.app
 
 The app appears as a hand icon in the menu bar. It starts production detection
 automatically, and the menu can stop, restart, open the debug preview, or quit.
+Use `Launch at Login` in the menu to register or unregister the app with
+macOS login items.
 
 ## Production Detection
 
@@ -30,6 +32,11 @@ FaceTime (`com.apple.FaceTime`) is running, then resumes after those apps quit.
 This is event-driven through `NSWorkspace` app launch/termination notifications.
 While paused, it also uses a low-frequency reconciliation check so short-lived
 video-call app processes do not leave capture paused.
+
+Production also pauses camera capture while the Mac sleeps, the display sleeps,
+the session is locked/inactive, or the screen saver is running. If production
+was enabled before the pause, it resumes after wake, unlock, or screen saver
+exit.
 
 Hand pose runs full-frame because Apple Vision hand pose is less stable when
 cropped to a moving ROI. The detector only alerts when high-confidence hand
