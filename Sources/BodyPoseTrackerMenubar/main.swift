@@ -40,11 +40,9 @@ private func defaultAlertSoundURL() -> URL? {
 
 struct NativeProfile {
     let name: String
-    let cameraWidth: Int
-    let cameraHeight: Int
+    let cameraFPS: Double
     let faceFPS: Double
     let handFPS: Double
-    let maxDimension: Int
     let maxHands: Int
     let triggerFrames: Int
     let triggerSeconds: TimeInterval
@@ -58,11 +56,9 @@ struct NativeProfile {
 
     static let production = NativeProfile(
         name: "Production",
-        cameraWidth: 640,
-        cameraHeight: 360,
+        cameraFPS: 10,
         faceFPS: 2,
         handFPS: 8,
-        maxDimension: 480,
         maxHands: 1,
         triggerFrames: 5,
         triggerSeconds: 0.3,
@@ -338,7 +334,7 @@ final class DebugPreviewView: NSView {
         } else {
             roiLabel = "Vision ROI full frame"
         }
-        let planned = frameData.plannedHandROI == nil ? "4x zone unavailable" : "orange decision 4x zone"
+        let planned = frameData.plannedHandROI == nil ? "4x debug ROI unavailable" : "orange debug 4x ROI"
         let usableHands = frameData.hands.filter { !$0.isEmpty }.count
         let pointCount = frameData.hands.reduce(0) { $0 + $1.count }
         let text = String(
@@ -405,7 +401,7 @@ final class DebugPreviewWindowController: NSWindowController, NSWindowDelegate {
 
 final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
     private let session = AVCaptureSession()
-    private let captureQueue = DispatchQueue(label: "BodyPoseTracker.capture", qos: .userInitiated)
+    private let captureQueue = DispatchQueue(label: "BodyPoseTracker.capture", qos: .utility)
     private let sequenceHandler = VNSequenceRequestHandler()
     private let ciContext = CIContext()
     private let faceRequest = VNDetectFaceRectanglesRequest()
@@ -429,6 +425,8 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
     private var latestFace: FaceBox?
     private var lastLogAt = Date.distantPast.timeIntervalSinceReferenceDate
     private var lastBeepAt = Date.distantPast.timeIntervalSinceReferenceDate
+    private var lastPublishedStatus: String?
+    private var lastPublishedActive: Bool?
     private var handRegionOfInterest = VNNormalizedIdentityRect
     private var latestHands: [[String: Landmark]] = []
     private var latestState = HairAlertState.empty
@@ -443,6 +441,8 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
         self.alertSoundURL = alertSoundURL
         self.onStatus = onStatus
         super.init()
+        faceRequest.preferBackgroundProcessing = true
+        handRequest.preferBackgroundProcessing = true
         configureAlertSound()
     }
 
@@ -461,6 +461,8 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
             self.lastFaceObservationAt = Date.distantPast.timeIntervalSinceReferenceDate
             self.latestFace = nil
             self.lastBeepAt = Date.distantPast.timeIntervalSinceReferenceDate
+            self.lastPublishedStatus = nil
+            self.lastPublishedActive = nil
             self.handRegionOfInterest = VNNormalizedIdentityRect
             self.latestHands = []
             self.latestState = .empty
@@ -478,11 +480,9 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
                 self.isRunning = true
                 self.log.write(
                     "started profile=\(profile.name) faceFPS=\(profile.faceFPS) handFPS=\(profile.handFPS) " +
-                        "maxHands=\(profile.maxHands) triggerSeconds=\(profile.triggerSeconds)"
+                        "cameraFPS=\(profile.cameraFPS) maxHands=\(profile.maxHands) triggerSeconds=\(profile.triggerSeconds)"
                 )
-                DispatchQueue.main.async {
-                    self.onStatus("Running \(profile.name)", .empty)
-                }
+                self.publishStatus("Running \(profile.name)", state: .empty, force: true)
             } catch {
                 self.log.write("start failed: \(error.localizedDescription)")
                 DispatchQueue.main.async {
@@ -499,6 +499,8 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
             }
             self.isRunning = false
             self.alertWasActive = false
+            self.lastPublishedStatus = nil
+            self.lastPublishedActive = nil
             self.latestHands = []
             self.latestState = .empty
             self.stopAlertSound()
@@ -522,6 +524,7 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
         guard let device = AVCaptureDevice.default(for: .video) else {
             throw NSError(domain: "BodyPoseTracker", code: 1, userInfo: [NSLocalizedDescriptionKey: "No video camera found"])
         }
+        configureCameraFrameRate(device)
 
         let input = try AVCaptureDeviceInput(device: device)
         guard session.canAddInput(input) else {
@@ -538,6 +541,55 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
         session.addOutput(output)
 
         session.commitConfiguration()
+    }
+
+    private func configureCameraFrameRate(_ device: AVCaptureDevice) {
+        guard profile.cameraFPS > 0 else { return }
+
+        let ranges = device.activeFormat.videoSupportedFrameRateRanges
+        guard !ranges.isEmpty else {
+            log.write("camera frame duration unavailable: no frame-rate ranges")
+            return
+        }
+
+        let targetFPS = profile.cameraFPS
+        let compatibleRange = ranges.first { range in
+            range.minFrameRate <= targetFPS && targetFPS <= range.maxFrameRate
+        } ?? ranges.min { lhs, rhs in
+            abs(lhs.maxFrameRate - targetFPS) < abs(rhs.maxFrameRate - targetFPS)
+        }
+        guard let compatibleRange else { return }
+
+        let appliedFPS = min(max(targetFPS, compatibleRange.minFrameRate), compatibleRange.maxFrameRate)
+        let roundedFPS = max(1, Int32(appliedFPS.rounded()))
+        let frameDuration = CMTime(value: 1, timescale: roundedFPS)
+
+        do {
+            try device.lockForConfiguration()
+            defer { device.unlockForConfiguration() }
+            device.activeVideoMinFrameDuration = frameDuration
+            device.activeVideoMaxFrameDuration = frameDuration
+            log.write(
+                String(
+                    format: "camera frame duration targetFPS=%.1f appliedFPS=%d",
+                    targetFPS,
+                    roundedFPS
+                )
+            )
+        } catch {
+            log.write("camera frame duration failed: \(error.localizedDescription)")
+        }
+    }
+
+    private func publishStatus(_ status: String, state: HairAlertState, force: Bool = false) {
+        guard force || lastPublishedStatus != status || lastPublishedActive != state.active else {
+            return
+        }
+        lastPublishedStatus = status
+        lastPublishedActive = state.active
+        DispatchQueue.main.async {
+            self.onStatus(status, state)
+        }
     }
 
     func captureOutput(
@@ -587,10 +639,8 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
                 stateForFrame = state
                 updateAlertSound(state: state, now: now)
                 maybeLog(state: state, hands: hands, now: now)
-                DispatchQueue.main.async {
-                    let label = state.active ? "Hand Near Head" : "Running \(self.profile.name)"
-                    self.onStatus(label, state)
-                }
+                let label = state.active ? "Hand Near Head" : "Running \(profile.name)"
+                publishStatus(label, state: state)
             } else if face == nil {
                 let state = detector.update(face: nil, hands: [], now: now)
                 latestHands = []

@@ -18,15 +18,18 @@ automatically, and the menu can stop, restart, open the debug preview, or quit.
 
 ## Production Detection
 
-Production runs face detection at `2 FPS`, hand detection at `8 FPS`, tracks at
-most one hand, and requires the hand to remain near the head for `0.3s` before
-the warning becomes active.
+Production requests a lower camera capture cadence, runs face detection at
+`2 FPS`, runs hand detection at `8 FPS`, tracks at most one hand, and requires
+the hand to remain near the head for `0.3s` before the warning becomes active.
+The camera may clamp the requested `10 FPS` capture cadence to the nearest
+supported format.
 
 The app computes a planned square hand-search region centered on the detected
-head. The square side is `4x` the detected head size before it is clamped to the
-camera frame. Hand pose currently runs full-frame because Apple Vision hand
-pose is less stable when cropped to a moving ROI. The detector still only
-alerts when high-confidence hand landmarks enter the head warning zone.
+head for debugging only. The square side is `4x` the detected head size before
+it is clamped to the camera frame. Hand pose currently runs full-frame because
+Apple Vision hand pose is less stable when cropped to a moving ROI. The
+detector only alerts when high-confidence hand landmarks enter the blue/red
+head warning zone.
 
 Warnings play the bundled `iMovie-Alarm.mp3` by default. You can override it
 with `--alert-sound /path/to/sound.mp3`, or use `--no-alert-sound` to fall back
@@ -42,7 +45,7 @@ Visual legend:
 - Green rectangle: detected face.
 - Blue/red ellipse: active head warning zone.
 - Cyan points/lines: hand landmarks from Apple Vision.
-- Orange square: planned `4x` head-centered decision zone.
+- Orange square: debug-only planned `4x` head-centered ROI.
 - Bottom label: current profile, face/hand counts, streak, score, delay, and
   whether Vision hand detection is full frame or ROI-cropped.
 
@@ -53,7 +56,7 @@ tail -f ~/Library/Logs/BodyPoseTracker/BodyPoseTracker.log
 ```
 
 Log lines include both `visionROI` and `plannedROI`. `visionROI=full` means
-hand pose inference is full-frame; `plannedROI` is the orange decision zone.
+hand pose inference is full-frame; `plannedROI` is the orange debug-only ROI.
 
 ## Short Test Run
 
