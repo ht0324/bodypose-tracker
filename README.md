@@ -16,7 +16,9 @@ open dist/BodyPoseTracker.app
 The app appears as a hand icon in the menu bar. It starts production detection
 automatically, and the menu can stop, restart, open the debug preview, or quit.
 Use `Launch at Login` in the menu to register or unregister the app with
-macOS login items.
+macOS login items. Use `Auto Enable on External Power` to let the app restart
+production detection automatically when the Mac is plugged into power, even if
+detection was previously disabled.
 
 ## Source Layout
 

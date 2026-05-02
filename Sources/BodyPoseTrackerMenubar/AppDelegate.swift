@@ -20,15 +20,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // Matched to the bundled iMovie alarm envelope: roughly one 0.22s beep every 0.68s.
     private let alertFlashPeriod: TimeInterval = 0.68
     private let alertFlashOnDuration: TimeInterval = 0.22
+    private let alertBubbleSize = NSSize(width: 54, height: 24)
+    private let alertBubbleCornerRadius: CGFloat = 11
+    private let alertBubbleIconSize = NSSize(width: 16, height: 16)
     private let options = AppOptions.parse(arguments: CommandLine.arguments)
     private lazy var log = FileLog(url: defaultLogURL())
     private var statusItem: NSStatusItem?
     private var statusMenuItem = NSMenuItem(title: "Starting...", action: nil, keyEquivalent: "")
     private var productionToggleMenuItem = NSMenuItem(title: "Enable", action: nil, keyEquivalent: "")
     private var launchAtLoginMenuItem = NSMenuItem(title: "Launch at Login", action: nil, keyEquivalent: "")
+    private var autoEnableOnExternalPowerMenuItem = NSMenuItem(title: "Auto Enable on External Power", action: nil, keyEquivalent: "")
     private var debugPreviewMenuItem = NSMenuItem(title: "Show Debug Preview", action: nil, keyEquivalent: "")
     private var controller: VisionCaptureController?
     private var debugPreviewWindow: DebugPreviewWindowController?
+    private var powerStateMonitor: PowerStateMonitor?
+    private var latestPowerState = PowerState(isConnectedToExternalPower: false, isCharging: false)
     private var productionWanted = false
     private var productionStartPending = false
     private var runningPauseAppBundleIDs = Set<String>()
@@ -42,7 +48,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         setupStatusItem()
-        log.write("menubar app launched config=\(DetectionConfig.production.name)")
+        log.write("menubar app launched config=\(DetectionConfig.production.name) autoEnableOnExternalPower=\(autoEnableOnExternalPower)")
 
         controller = VisionCaptureController(log: log, alertSoundURL: options.alertSoundURL) { [weak self] status, state in
             self?.updateStatus(status, state: state)
@@ -58,6 +64,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         } else {
             updateStatus("Stopped", state: .empty)
         }
+        setupPowerStateMonitoring()
 
         if let duration = options.duration {
             DispatchQueue.main.asyncAfter(deadline: .now() + duration) {
@@ -82,6 +89,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         distributedObservers = []
         stopPauseReconcileTimer()
+        powerStateMonitor?.stop()
+        powerStateMonitor = nil
         stopAlertIconFlash()
         log.write("applicationWillTerminate")
     }
@@ -89,6 +98,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func menuWillOpen(_ menu: NSMenu) {
         syncProductionToggleMenuItem()
         syncLaunchAtLoginMenuItem()
+        syncAutoEnableOnExternalPowerMenuItem()
     }
 
     private func setupStatusItem() {
@@ -109,6 +119,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         launchAtLoginMenuItem.action = #selector(toggleLaunchAtLogin)
         syncLaunchAtLoginMenuItem()
         menu.addItem(launchAtLoginMenuItem)
+        autoEnableOnExternalPowerMenuItem.action = #selector(toggleAutoEnableOnExternalPower)
+        syncAutoEnableOnExternalPowerMenuItem()
+        menu.addItem(autoEnableOnExternalPowerMenuItem)
         menu.addItem(.separator())
         debugPreviewMenuItem.action = #selector(toggleDebugPreview)
         menu.addItem(debugPreviewMenuItem)
@@ -125,6 +138,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         tint: NSColor?
     ) {
         guard let button else { return }
+        statusItem?.length = NSStatusItem.squareLength
 
         let image = makeStatusImage(
             symbolName: symbolName,
@@ -135,6 +149,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         button.contentTintColor = nil
         button.title = ""
         button.imagePosition = .imageOnly
+        button.imageScaling = .scaleProportionallyDown
         button.toolTip = accessibilityDescription
     }
 
@@ -158,6 +173,103 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         configuredImage.size = NSSize(width: 18, height: 18)
         return configuredImage
+    }
+
+    private func configureAlertBubbleButton() {
+        guard let statusItem, let button = statusItem.button else { return }
+
+        statusItem.length = alertBubbleSize.width
+        button.image = makeAlertBubbleImage()
+        button.contentTintColor = nil
+        button.title = ""
+        button.imagePosition = .imageOnly
+        button.imageScaling = .scaleNone
+        button.toolTip = "Hand Near Head"
+    }
+
+    private func configureAlertRestingButton() {
+        guard let statusItem, let button = statusItem.button else { return }
+
+        statusItem.length = alertBubbleSize.width
+        button.image = makeWideStatusImage(
+            symbolName: "hand.raised",
+            accessibilityDescription: "BodyPoseTracker"
+        )
+        button.contentTintColor = nil
+        button.title = ""
+        button.imagePosition = .imageOnly
+        button.imageScaling = .scaleNone
+        button.toolTip = "BodyPoseTracker"
+    }
+
+    private func makeWideStatusImage(
+        symbolName: String,
+        accessibilityDescription: String
+    ) -> NSImage? {
+        guard let symbol = NSImage(systemSymbolName: symbolName, accessibilityDescription: accessibilityDescription) else {
+            return nil
+        }
+
+        let image = NSImage(size: alertBubbleSize)
+        image.lockFocus()
+
+        symbol.size = NSSize(width: 18, height: 18)
+        let symbolRect = NSRect(
+            x: (alertBubbleSize.width - symbol.size.width) / 2,
+            y: (alertBubbleSize.height - symbol.size.height) / 2 + 0.5,
+            width: symbol.size.width,
+            height: symbol.size.height
+        )
+        symbol.draw(in: symbolRect)
+
+        image.unlockFocus()
+        image.isTemplate = true
+        image.accessibilityDescription = accessibilityDescription
+        return image
+    }
+
+    private func makeAlertBubbleImage() -> NSImage {
+        let image = NSImage(size: alertBubbleSize)
+        image.lockFocus()
+
+        let bubbleRect = NSRect(
+            x: 1,
+            y: 1,
+            width: alertBubbleSize.width - 2,
+            height: alertBubbleSize.height - 2
+        )
+        let bubblePath = NSBezierPath(
+            roundedRect: bubbleRect,
+            xRadius: alertBubbleCornerRadius,
+            yRadius: alertBubbleCornerRadius
+        )
+        NSColor.systemRed.setFill()
+        bubblePath.fill()
+
+        drawAlertHandSymbol()
+
+        image.unlockFocus()
+        image.isTemplate = false
+        image.accessibilityDescription = "Hand Near Head"
+        return image
+    }
+
+    private func drawAlertHandSymbol() {
+        guard let symbol = NSImage(systemSymbolName: "hand.raised.fill", accessibilityDescription: "Hand Near Head") else {
+            return
+        }
+
+        let configuredSymbol = symbol.withSymbolConfiguration(.init(paletteColors: [.white])) ?? symbol
+        configuredSymbol.isTemplate = false
+        configuredSymbol.size = alertBubbleIconSize
+
+        let iconRect = NSRect(
+            x: (alertBubbleSize.width - alertBubbleIconSize.width) / 2,
+            y: (alertBubbleSize.height - alertBubbleIconSize.height) / 2 + 0.5,
+            width: alertBubbleIconSize.width,
+            height: alertBubbleIconSize.height
+        )
+        configuredSymbol.draw(in: iconRect)
     }
 
     private func syncLaunchAtLoginMenuItem() {
@@ -210,6 +322,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         syncLaunchAtLoginMenuItem()
     }
 
+    private var autoEnableOnExternalPower: Bool {
+        get {
+            UserDefaults.standard.bool(forKey: UserDefaultsKeys.autoEnableOnExternalPower)
+        }
+        set {
+            UserDefaults.standard.set(newValue, forKey: UserDefaultsKeys.autoEnableOnExternalPower)
+        }
+    }
+
+    private func syncAutoEnableOnExternalPowerMenuItem() {
+        autoEnableOnExternalPowerMenuItem.title = "Auto Enable on External Power"
+        autoEnableOnExternalPowerMenuItem.state = autoEnableOnExternalPower ? .on : .off
+    }
+
+    @objc private func toggleAutoEnableOnExternalPower() {
+        autoEnableOnExternalPower.toggle()
+        syncAutoEnableOnExternalPowerMenuItem()
+        log.write("auto enable on external power \(autoEnableOnExternalPower ? "enabled" : "disabled")")
+        autoEnableProductionIfNeededForPower(source: "setting toggle")
+    }
+
     private func requestCameraAccess(_ completion: @escaping (Bool) -> Void) {
         let status = AVCaptureDevice.authorizationStatus(for: .video)
         log.write("camera authorization status before request=\(status.rawValue)")
@@ -227,6 +360,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             log.write("camera authorization unavailable status=\(status.rawValue)")
             completion(false)
         }
+    }
+
+    private func setupPowerStateMonitoring() {
+        let monitor = PowerStateMonitor { [weak self] state, source in
+            self?.handlePowerStateChange(state, source: source)
+        }
+        powerStateMonitor = monitor
+        monitor.start()
+    }
+
+    private func handlePowerStateChange(_ state: PowerState, source: String) {
+        latestPowerState = state
+        log.write(
+            "power state source=\(source) externalPower=\(state.isConnectedToExternalPower) charging=\(state.isCharging)"
+        )
+        autoEnableProductionIfNeededForPower(source: source)
+    }
+
+    private func autoEnableProductionIfNeededForPower(source: String) {
+        guard autoEnableOnExternalPower else { return }
+        guard latestPowerState.canAutoEnableOnExternalPower else { return }
+        guard !productionWanted && controller?.isRunning != true && !productionStartPending else { return }
+
+        log.write("auto-enabling production on external power source=\(source)")
+        start(.production)
     }
 
     private func setupPauseAppMonitoring() {
@@ -661,12 +819,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func setAlertIconVisible(_ visible: Bool) {
-        configureStatusButton(
-            statusItem?.button,
-            symbolName: visible ? "hand.raised.fill" : "hand.raised",
-            accessibilityDescription: visible ? "Hand Near Head" : "BodyPoseTracker",
-            tint: visible ? .systemRed : nil
-        )
+        if visible {
+            configureAlertBubbleButton()
+        } else {
+            configureAlertRestingButton()
+        }
     }
 
     @objc private func toggleDebugPreview() {
@@ -708,4 +865,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         stopProduction()
         NSApp.terminate(nil)
     }
+}
+
+private enum UserDefaultsKeys {
+    static let autoEnableOnExternalPower = "autoEnableWhileCharging"
 }
