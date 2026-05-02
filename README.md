@@ -1,11 +1,54 @@
+<p align="center">
+  <img src="Resources/AppIcon.png" width="128" alt="BodyPoseTracker app icon">
+</p>
+
 # BodyPoseTracker
 
-Native macOS menu-bar app for detecting hand movement near your head using
-Apple Vision face rectangles and hand landmarks. It runs locally from
-AVFoundation sample buffers and keeps one shared detection path for production
-and debug preview.
+BodyPoseTracker is a small native macOS menu-bar app that watches for your hand
+near your head and gives you a gentle warning when the gesture lingers. It was
+built as a local-first habit interruption tool for moments like hair touching or
+hair picking while working at a desk.
 
-## Build And Run
+The app uses the FaceTime camera, Apple Vision face detection, and Apple Vision
+hand landmarks. It runs on-device, does not upload video, and keeps the same
+detection path for the background app and the debug preview.
+
+## Features
+
+- Runs quietly from the macOS menu bar.
+- Detects face position and one nearby hand using Apple Vision.
+- Warns only after the hand stays near the head for a short delay.
+- Plays a bundled alarm sound and flashes a red menu-bar bubble while active.
+- Includes an AppKit debug preview that shows the live camera feed, hand
+  landmarks, face box, and head warning zone.
+- Automatically pauses capture during Zoom or FaceTime calls.
+- Automatically pauses during sleep, display sleep, lock, or screen saver.
+- Optional launch-at-login and auto-enable-on-external-power menu settings.
+
+## How It Works
+
+BodyPoseTracker uses AVFoundation to read camera frames, then runs Apple Vision
+requests on those frames:
+
+- Face rectangles estimate the current head position.
+- Hand pose landmarks estimate whether a hand is close to the head.
+- A rounded triangular head zone gives extra room around the hair area while
+  tapering near the chin.
+- A short activation delay helps avoid warnings from quick, harmless movements.
+
+For performance, the app requests a low `320x240` camera preset, runs face
+detection at `2 FPS`, runs hand detection at `4 FPS` while idle, and boosts hand
+detection to `8 FPS` when a hand is recently visible.
+
+## Quick Start
+
+Requirements:
+
+- macOS 14 or newer
+- Swift 5.9 / Xcode command line tools
+- Camera permission for the packaged app
+
+Build and run from source:
 
 ```bash
 swift test
@@ -13,87 +56,69 @@ scripts/build-menubar-app.sh
 open dist/BodyPoseTracker.app
 ```
 
-The app appears as a hand icon in the menu bar. It starts production detection
-automatically, and the menu can stop, restart, open the debug preview, or quit.
-Use `Launch at Login` in the menu to register or unregister the app with
-macOS login items. Use `Auto Enable on External Power` to let the app restart
-production detection automatically when the Mac is plugged into power, even if
-detection was previously disabled.
-
-## Source Layout
-
-The menu-bar target keeps the bootstrap in `main.swift`, app lifecycle in
-`AppDelegate.swift`, camera and Vision work in `VisionCaptureController.swift`,
-preview drawing in `DebugPreview.swift`, and small support types in
-`DetectionConfig.swift`, `AppOptions.swift`, `FileLog.swift`, and
-`ResourceLocations.swift`.
-
-## Production Detection
-
-Production requests a lower `320x240` camera capture preset, runs face detection
-at `2 FPS`, idles hand detection at `4 FPS`, boosts hand detection to `8 FPS`
-while a hand or near-warning is recent, tracks at most one hand, and requires
-the hand to remain near the head for `0.2s` before the warning becomes active.
-The app requests `10 FPS` at both the camera device and video connection layers;
-macOS may still clamp the physical camera format to the nearest supported rate.
-
-Production automatically pauses camera capture while Zoom (`us.zoom.xos`) or
-FaceTime (`com.apple.FaceTime`) is running, then resumes after those apps quit.
-This is event-driven through `NSWorkspace` app launch/termination notifications.
-While paused, it also uses a low-frequency reconciliation check so short-lived
-video-call app processes do not leave capture paused.
-
-Production also pauses camera capture while the Mac sleeps, the display sleeps,
-the session is locked/inactive, or the screen saver is running. If production
-was enabled before the pause, it resumes after wake, unlock, or screen saver
-exit.
-
-Hand pose runs full-frame because Apple Vision hand pose is less stable when
-cropped to a moving ROI. The detector only alerts when high-confidence hand
-landmarks enter the blue/red head warning zone.
-
-Warnings play the bundled `iMovie-Alarm.mp3` by default. You can override it
-with `--alert-sound /path/to/sound.mp3`, or use `--no-alert-sound` to fall back
-to the system beep. The bundled sound stops as soon as the warning clears. While
-the warning is active, the menu-bar icon flashes red at the bundled alarm's
-approximate beep cadence.
-
-## Native Debug Preview
-
-Choose `Show Debug Preview` from the menu bar app. The preview is an AppKit
-window fed by the same `VisionCaptureController` used in production.
-
-Visual legend:
-
-- Green rectangle: detected face.
-- Blue/red Reuleaux triangle: active head warning zone.
-- Cyan points/lines: hand landmarks from Apple Vision.
-- Bottom label: current detection config, measured processing FPS, camera/connection
-  FPS, frame size, target face/hand FPS, hand counts, streak, score, and delay.
-
-## Logs
-
-```bash
-tail -f ~/Library/Logs/BodyPoseTracker/BodyPoseTracker.log
-```
-
-Log lines include delivered frame size, face/hand counts, usable landmark count,
-adaptive hand FPS, streak, active state, and score.
-
-## Short Test Run
+For a short smoke test:
 
 ```bash
 open dist/BodyPoseTracker.app --args --duration 10
 ```
 
-Stop the app:
+Stop the app from Terminal:
 
 ```bash
 pkill -f BodyPoseTrackerMenubar
 ```
 
-## Camera Permission
+## Using The App
 
-If macOS asks, allow `BodyPoseTracker.app` to access the camera. The app runs all
-frame processing locally. The menu-bar camera privacy indicator is controlled by
-macOS and cannot be hidden by the app.
+After launch, BodyPoseTracker appears as a hand icon in the menu bar. The menu
+lets you enable or disable detection, open the debug preview, toggle launch at
+login, toggle auto-enable on external power, or quit the app.
+
+Choose `Show Debug Preview` when you want to tune or understand detection. The
+preview uses the same `VisionCaptureController` as the background app, so what
+you see there is the same logic used by the production menu-bar behavior.
+
+Debug preview legend:
+
+- Green rectangle: detected face.
+- Blue/red rounded triangle: active head warning zone.
+- Cyan points and lines: hand landmarks from Apple Vision.
+- Bottom label: current FPS, frame size, hand count, streak, score, and delay.
+
+## Privacy
+
+All frame processing is local to your Mac. BodyPoseTracker does not send camera
+frames or detection results to a server.
+
+macOS controls the camera privacy indicator in the menu bar. Because the app is
+using the camera, macOS may show its own camera indicator independently of the
+BodyPoseTracker icon.
+
+## Logs
+
+Runtime logs are written here:
+
+```bash
+tail -f ~/Library/Logs/BodyPoseTracker/BodyPoseTracker.log
+```
+
+Logs include delivered frame size, face and hand counts, adaptive hand FPS,
+warning state, and detection score.
+
+## Project Layout
+
+- `Sources/BodyPoseTrackerCore/DetectionCore.swift`: pure detection state,
+  geometry, and tests-friendly model types.
+- `Sources/BodyPoseTrackerMenubar/`: AppKit menu-bar app, camera capture,
+  Vision requests, audio, launch-at-login, pause logic, and debug preview.
+- `Tests/BodyPoseTrackerCoreTests/`: deterministic detector tests.
+- `Resources/`: app icon and bundled alert sound.
+- `Packaging/`: app plist template.
+- `scripts/build-menubar-app.sh`: assembles and ad-hoc signs
+  `dist/BodyPoseTracker.app`.
+
+## Notes
+
+This is a personal assistive prototype, not a medical device. Detection quality
+depends on camera angle, lighting, hand visibility, and the limits of Apple
+Vision hand pose tracking.
