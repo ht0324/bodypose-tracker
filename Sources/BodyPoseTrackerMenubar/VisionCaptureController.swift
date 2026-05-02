@@ -23,7 +23,8 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
     private var detector = HairPickingDetector(
         triggerSeconds: DetectionConfig.production.triggerSeconds,
         headScale: DetectionConfig.production.headScale,
-        faceHoldSeconds: DetectionConfig.production.faceHoldSeconds
+        faceHoldSeconds: DetectionConfig.production.faceHoldSeconds,
+        maxHandFaceRatio: DetectionConfig.production.maxHandFaceRatio
     )
     private var lastProcessAt = Date.distantPast.timeIntervalSinceReferenceDate
     private var lastFaceProcessAt = Date.distantPast.timeIntervalSinceReferenceDate
@@ -64,7 +65,8 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
             self.detector = HairPickingDetector(
                 triggerSeconds: config.triggerSeconds,
                 headScale: config.headScale,
-                faceHoldSeconds: config.faceHoldSeconds
+                faceHoldSeconds: config.faceHoldSeconds,
+                maxHandFaceRatio: config.maxHandFaceRatio
             )
             self.lastProcessAt = Date.distantPast.timeIntervalSinceReferenceDate
             self.lastFaceProcessAt = Date.distantPast.timeIntervalSinceReferenceDate
@@ -95,7 +97,7 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
                 self.log.write(
                     "started config=\(config.name) preset=\(config.capturePreset.rawValue) faceFPS=\(config.faceFPS) idleHandFPS=\(config.idleHandFPS) " +
                         "activeHandFPS=\(config.activeHandFPS) cameraFPS=\(config.cameraFPS) maxHands=\(config.maxHands) " +
-                        "triggerSeconds=\(config.triggerSeconds) handBoostHoldSeconds=\(config.handBoostHoldSeconds)"
+                        "triggerSeconds=\(config.triggerSeconds) maxHandFaceRatio=\(config.maxHandFaceRatio) handBoostHoldSeconds=\(config.handBoostHoldSeconds)"
                 )
                 self.publishStatus("Enabled", state: .empty, force: true)
                 DispatchQueue.main.async {

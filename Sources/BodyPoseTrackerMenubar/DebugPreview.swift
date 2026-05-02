@@ -167,7 +167,9 @@ final class DebugPreviewView: NSView {
         guard let face = frameData.state.headZone?.faceBox else { return }
 
         for hand in frameData.hands {
-            guard let metrics = handSizeMetrics(hand: hand, face: face) else { continue }
+            guard let metrics = handSizeMetrics(hand: hand, face: face, threshold: frameData.config.maxHandFaceRatio) else {
+                continue
+            }
 
             let projectedSquare = projectTopLeftRect(metrics.squareRect, into: imageRect)
             let color: NSColor = metrics.accepted ? .systemOrange : .systemRed
@@ -230,6 +232,7 @@ final class DebugPreviewView: NSView {
         let handSide = sizeMetrics.map { String(format: "%.0f", $0.handSide) } ?? "-"
         let faceSide = sizeMetrics.map { String(format: "%.0f", $0.faceSide) } ?? "-"
         let sideDiff = sizeMetrics.map { String(format: "%+.0f", $0.handSide - $0.faceSide) } ?? "-"
+        let handFaceLimit = String(format: "%.2f", frameData.config.maxHandFaceRatio)
         let cameraFPS = frameData.appliedCameraFPS.map { String(format: "%.0f", $0) } ?? "-"
         let connectionFPS = frameData.appliedConnectionFPS.map { String(format: "%.0f", $0) } ?? "-"
         let usableHands = frameData.hands.filter { !$0.isEmpty }.count
@@ -257,11 +260,12 @@ final class DebugPreviewView: NSView {
             score
         )
         let line3 = String(
-            format: "hand %@px | face %@px | diff %@px | hand/face %@ | size %@",
+            format: "hand %@px | face %@px | diff %@px | hand/face %@ <= %@ | size %@",
             handSide,
             faceSide,
             sideDiff,
             handFaceRatio,
+            handFaceLimit,
             handSizeStatus
         )
         let text = "\(line1)\n\(line2)\n\(line3)"
@@ -284,11 +288,15 @@ final class DebugPreviewView: NSView {
         guard let face = frameData.state.headZone?.faceBox else { return nil }
 
         return frameData.hands
-            .compactMap { handSizeMetrics(hand: $0, face: face) }
+            .compactMap { handSizeMetrics(hand: $0, face: face, threshold: frameData.config.maxHandFaceRatio) }
             .max { $0.ratio < $1.ratio }
     }
 
-    private func handSizeMetrics(hand: [String: Landmark], face: FaceBox) -> HandSizeMetrics? {
+    private func handSizeMetrics(
+        hand: [String: Landmark],
+        face: FaceBox,
+        threshold: Double
+    ) -> HandSizeMetrics? {
         guard let square = HairPickingDetector.handBoundingSquare(hand: hand) else { return nil }
 
         let faceSide = HairPickingDetector.faceSquareSide(face: face)
@@ -300,7 +308,7 @@ final class DebugPreviewView: NSView {
             handSide: square.side,
             faceSide: faceSide,
             ratio: ratio,
-            accepted: ratio <= 1.0
+            accepted: ratio <= threshold
         )
     }
 
