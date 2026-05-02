@@ -36,19 +36,35 @@ public struct HeadZone: Equatable {
     public let stale: Bool
 }
 
+public struct LandmarkSquare: Equatable {
+    public let x: Double
+    public let y: Double
+    public let side: Double
+
+    public init(x: Double, y: Double, side: Double) {
+        self.x = x
+        self.y = y
+        self.side = side
+    }
+}
+
 public struct HairAlertState: Equatable {
     public let active: Bool
     public let streak: Int
     public let zoneScore: Double?
     public let headZone: HeadZone?
     public let faceSeen: Bool
+    public let handFaceRatio: Double?
+    public let handSizeAccepted: Bool
 
     public static let empty = HairAlertState(
         active: false,
         streak: 0,
         zoneScore: nil,
         headZone: nil,
-        faceSeen: false
+        faceSeen: false,
+        handFaceRatio: nil,
+        handSizeAccepted: false
     )
 }
 
@@ -59,6 +75,7 @@ public final class HairPickingDetector {
     public let triggerSeconds: TimeInterval
     public let headScale: Double
     public let faceHoldSeconds: TimeInterval
+    public let maxHandFaceRatio: Double
 
     private(set) public var streak = 0
     private var closeStartedAt: TimeInterval?
@@ -68,11 +85,13 @@ public final class HairPickingDetector {
     public init(
         triggerSeconds: TimeInterval = 0.2,
         headScale: Double,
-        faceHoldSeconds: TimeInterval
+        faceHoldSeconds: TimeInterval,
+        maxHandFaceRatio: Double = 1.0
     ) {
         self.triggerSeconds = max(0, triggerSeconds)
         self.headScale = headScale
         self.faceHoldSeconds = faceHoldSeconds
+        self.maxHandFaceRatio = max(0, maxHandFaceRatio)
     }
 
     public func update(face: FaceBox?, hands: [[String: Landmark]], now: TimeInterval) -> HairAlertState {
@@ -95,12 +114,23 @@ public final class HairPickingDetector {
                 streak: streak,
                 zoneScore: nil,
                 headZone: nil,
-                faceSeen: false
+                faceSeen: false,
+                handFaceRatio: nil,
+                handSizeAccepted: false
             )
         }
 
         let zone = Self.estimateHeadZone(face: usableFace, headScale: headScale, stale: stale)
-        let points = Self.alertPoints(from: hands)
+        let evaluatedHands = Self.evaluateHandSizes(
+            hands: hands,
+            face: usableFace,
+            maxHandFaceRatio: maxHandFaceRatio
+        )
+        let handFaceRatio = evaluatedHands.compactMap(\.ratio).max()
+        let handSizeAccepted = evaluatedHands.contains { $0.accepted }
+        let points = evaluatedHands
+            .filter(\.accepted)
+            .flatMap { Self.alertPoints(from: $0.hand) }
         var zoneScore: Double?
 
         if !points.isEmpty {
@@ -126,7 +156,9 @@ public final class HairPickingDetector {
             streak: streak,
             zoneScore: zoneScore,
             headZone: zone,
-            faceSeen: faceSeen
+            faceSeen: faceSeen,
+            handFaceRatio: handFaceRatio,
+            handSizeAccepted: handSizeAccepted
         )
     }
 
@@ -224,10 +256,62 @@ public final class HairPickingDetector {
         }
     }
 
-    private static func alertPoints(from hands: [[String: Landmark]]) -> [Landmark] {
+    private static func alertPoints(from hand: [String: Landmark]) -> [Landmark] {
         let names = ["wrist", "thumb_tip", "index_tip", "middle_tip", "ring_tip", "little_tip"]
-        return hands.flatMap { hand in
-            names.compactMap { hand[$0] }
+        return names.compactMap { hand[$0] }
+    }
+
+    private struct HandSizeEvaluation {
+        let hand: [String: Landmark]
+        let ratio: Double?
+        let accepted: Bool
+    }
+
+    private static func evaluateHandSizes(
+        hands: [[String: Landmark]],
+        face: FaceBox,
+        maxHandFaceRatio: Double
+    ) -> [HandSizeEvaluation] {
+        hands.map { hand in
+            guard let ratio = handFaceRatio(hand: hand, face: face) else {
+                return HandSizeEvaluation(hand: hand, ratio: nil, accepted: false)
+            }
+
+            return HandSizeEvaluation(
+                hand: hand,
+                ratio: ratio,
+                accepted: ratio <= maxHandFaceRatio
+            )
         }
+    }
+
+    public static func handFaceRatio(hand: [String: Landmark], face: FaceBox) -> Double? {
+        guard let handSquare = handBoundingSquare(hand: hand) else { return nil }
+
+        let faceSide = faceSquareSide(face: face)
+        guard faceSide > 0 else { return nil }
+
+        return handSquare.side / faceSide
+    }
+
+    public static func handBoundingSquare(hand: [String: Landmark]) -> LandmarkSquare? {
+        let points = Array(hand.values)
+        guard !points.isEmpty else { return nil }
+
+        let minX = points.map(\.x).min() ?? 0
+        let maxX = points.map(\.x).max() ?? 0
+        let minY = points.map(\.y).min() ?? 0
+        let maxY = points.map(\.y).max() ?? 0
+        let handSide = max(maxX - minX, maxY - minY)
+
+        return LandmarkSquare(
+            x: minX - (handSide - (maxX - minX)) * 0.5,
+            y: minY - (handSide - (maxY - minY)) * 0.5,
+            side: handSide
+        )
+    }
+
+    public static func faceSquareSide(face: FaceBox) -> Double {
+        max(face.width, face.height)
     }
 }

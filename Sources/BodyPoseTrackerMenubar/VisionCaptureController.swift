@@ -542,12 +542,14 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
         guard now - lastLogAt >= 2.0 else { return }
         lastLogAt = now
         let score = state.zoneScore.map { String(format: "%.2f", $0) } ?? "-"
+        let handFaceRatio = state.handFaceRatio.map { String(format: "%.2f", $0) } ?? "-"
+        let handSizeStatus = state.handFaceRatio == nil ? "-" : (state.handSizeAccepted ? "ok" : "no")
         let handFPS = String(format: "%.0f", targetHandFPS(now: now))
         let usableHands = hands.filter { !$0.isEmpty }.count
         let pointCount = hands.reduce(0) { $0 + $1.count }
         log.write(
             "status config=\(config.name) face=\(state.faceSeen) hands=\(usableHands) rawHands=\(hands.count) points=\(pointCount) streak=\(state.streak) " +
-                "handFPS=\(handFPS) active=\(state.active) score=\(score)"
+                "handFPS=\(handFPS) active=\(state.active) score=\(score) handFace=\(handFaceRatio) handSize=\(handSizeStatus)"
         )
     }
 }

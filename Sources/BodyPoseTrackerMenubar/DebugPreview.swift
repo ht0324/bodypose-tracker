@@ -62,6 +62,7 @@ final class DebugPreviewView: NSView {
 
         drawFace(frameData.face, imageRect: imageRect)
         drawHeadZone(frameData.state.headZone, active: frameData.state.active, imageRect: imageRect)
+        drawHandSizeBoxes(frameData, imageRect: imageRect)
         drawHands(frameData.hands, imageRect: imageRect)
         drawStatus(frameData, imageRect: imageRect)
     }
@@ -162,8 +163,73 @@ final class DebugPreviewView: NSView {
         }
     }
 
+    private func drawHandSizeBoxes(_ frameData: DebugFrame, imageRect: CGRect) {
+        guard let face = frameData.state.headZone?.faceBox else { return }
+
+        for hand in frameData.hands {
+            guard let metrics = handSizeMetrics(hand: hand, face: face) else { continue }
+
+            let projectedSquare = projectTopLeftRect(metrics.squareRect, into: imageRect)
+            let color: NSColor = metrics.accepted ? .systemOrange : .systemRed
+            color.withAlphaComponent(0.98).setStroke()
+            let path = NSBezierPath(rect: projectedSquare)
+            path.lineWidth = 2
+            path.stroke()
+
+            drawHandSizeLabel(metrics, color: color, near: projectedSquare, imageRect: imageRect)
+        }
+    }
+
+    private func drawHandSizeLabel(
+        _ metrics: HandSizeMetrics,
+        color: NSColor,
+        near square: CGRect,
+        imageRect: CGRect
+    ) {
+        let text = String(
+            format: "hand %.0f / face %.0f = %.2fx",
+            metrics.handSide,
+            metrics.faceSide,
+            metrics.ratio
+        )
+        let attributes: [NSAttributedString.Key: Any] = [
+            .foregroundColor: NSColor.white,
+            .font: NSFont.monospacedSystemFont(ofSize: 11, weight: .semibold)
+        ]
+        let attributed = NSAttributedString(string: text, attributes: attributes)
+        let textSize = attributed.size()
+        let padding = CGSize(width: 6, height: 4)
+        let labelWidth = textSize.width + padding.width * 2
+        let labelHeight = textSize.height + padding.height * 2
+        let labelX = min(
+            max(imageRect.minX + 4, square.minX),
+            imageRect.maxX - labelWidth - 4
+        )
+        let preferredY = square.minY - labelHeight - 4
+        let labelY = preferredY >= imageRect.minY + 4
+            ? preferredY
+            : min(square.maxY + 4, imageRect.maxY - labelHeight - 4)
+        let labelRect = CGRect(x: labelX, y: labelY, width: labelWidth, height: labelHeight)
+
+        NSColor.black.withAlphaComponent(0.72).setFill()
+        NSBezierPath(roundedRect: labelRect, xRadius: 4, yRadius: 4).fill()
+        color.withAlphaComponent(0.95).setStroke()
+        let border = NSBezierPath(roundedRect: labelRect, xRadius: 4, yRadius: 4)
+        border.lineWidth = 1
+        border.stroke()
+        attributed.draw(at: CGPoint(x: labelRect.minX + padding.width, y: labelRect.minY + padding.height))
+    }
+
     private func drawStatus(_ frameData: DebugFrame, imageRect: CGRect) {
         let score = frameData.state.zoneScore.map { String(format: "%.2f", $0) } ?? "-"
+        let sizeMetrics = strongestHandSizeMetrics(frameData)
+        let handFaceRatio = sizeMetrics.map { String(format: "%.2f", $0.ratio) } ?? "-"
+        let handSizeStatus = sizeMetrics == nil
+            ? "-"
+            : (sizeMetrics?.accepted == true ? "ok" : "no")
+        let handSide = sizeMetrics.map { String(format: "%.0f", $0.handSide) } ?? "-"
+        let faceSide = sizeMetrics.map { String(format: "%.0f", $0.faceSide) } ?? "-"
+        let sideDiff = sizeMetrics.map { String(format: "%+.0f", $0.handSide - $0.faceSide) } ?? "-"
         let cameraFPS = frameData.appliedCameraFPS.map { String(format: "%.0f", $0) } ?? "-"
         let connectionFPS = frameData.appliedConnectionFPS.map { String(format: "%.0f", $0) } ?? "-"
         let usableHands = frameData.hands.filter { !$0.isEmpty }.count
@@ -190,9 +256,17 @@ final class DebugPreviewView: NSView {
             frameData.state.streak,
             score
         )
-        let text = "\(line1)\n\(line2)"
+        let line3 = String(
+            format: "hand %@px | face %@px | diff %@px | hand/face %@ | size %@",
+            handSide,
+            faceSide,
+            sideDiff,
+            handFaceRatio,
+            handSizeStatus
+        )
+        let text = "\(line1)\n\(line2)\n\(line3)"
 
-        let barHeight: CGFloat = 48
+        let barHeight: CGFloat = 66
         let barRect = CGRect(x: imageRect.minX, y: imageRect.minY, width: imageRect.width, height: barHeight)
         NSColor.black.withAlphaComponent(0.78).setFill()
         barRect.fill()
@@ -204,6 +278,38 @@ final class DebugPreviewView: NSView {
         NSAttributedString(string: text, attributes: attributes).draw(
             in: barRect.insetBy(dx: 10, dy: 6)
         )
+    }
+
+    private func strongestHandSizeMetrics(_ frameData: DebugFrame) -> HandSizeMetrics? {
+        guard let face = frameData.state.headZone?.faceBox else { return nil }
+
+        return frameData.hands
+            .compactMap { handSizeMetrics(hand: $0, face: face) }
+            .max { $0.ratio < $1.ratio }
+    }
+
+    private func handSizeMetrics(hand: [String: Landmark], face: FaceBox) -> HandSizeMetrics? {
+        guard let square = HairPickingDetector.handBoundingSquare(hand: hand) else { return nil }
+
+        let faceSide = HairPickingDetector.faceSquareSide(face: face)
+        guard faceSide > 0 else { return nil }
+
+        let ratio = square.side / faceSide
+        return HandSizeMetrics(
+            squareRect: CGRect(x: square.x, y: square.y, width: square.side, height: square.side),
+            handSide: square.side,
+            faceSide: faceSide,
+            ratio: ratio,
+            accepted: ratio <= 1.0
+        )
+    }
+
+    private struct HandSizeMetrics {
+        let squareRect: CGRect
+        let handSide: Double
+        let faceSide: Double
+        let ratio: Double
+        let accepted: Bool
     }
 }
 
