@@ -27,6 +27,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private lazy var log = FileLog(url: defaultLogURL())
     private var statusItem: NSStatusItem?
     private var statusMenuItem = NSMenuItem(title: "Starting...", action: nil, keyEquivalent: "")
+    private var dailyStreakMenuItem = NSMenuItem(title: "Daily streak: Starting...", action: nil, keyEquivalent: "")
     private var productionToggleMenuItem = NSMenuItem(title: "Enable", action: nil, keyEquivalent: "")
     private var launchAtLoginMenuItem = NSMenuItem(title: "Launch at Login", action: nil, keyEquivalent: "")
     private var autoEnableOnExternalPowerMenuItem = NSMenuItem(title: "Auto Enable on External Power", action: nil, keyEquivalent: "")
@@ -42,12 +43,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var workspaceObservers: [NSObjectProtocol] = []
     private var distributedObservers: [NSObjectProtocol] = []
     private var pauseReconcileTimer: Timer?
+    private var dailyStreakRefreshTimer: Timer?
     private var alertFlashTimer: Timer?
     private var alertFlashOffWorkItem: DispatchWorkItem?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         setupStatusItem()
+        scheduleDailyStreakRefresh()
         log.write("menubar app launched config=\(DetectionConfig.production.name) autoEnableOnExternalPower=\(autoEnableOnExternalPower)")
 
         controller = VisionCaptureController(log: log, alertSoundURL: options.alertSoundURL) { [weak self] status, state in
@@ -89,6 +92,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         distributedObservers = []
         stopPauseReconcileTimer()
+        dailyStreakRefreshTimer?.invalidate()
+        dailyStreakRefreshTimer = nil
         powerStateMonitor?.stop()
         powerStateMonitor = nil
         stopAlertIconFlash()
@@ -97,6 +102,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func menuWillOpen(_ menu: NSMenu) {
         syncProductionToggleMenuItem()
+        syncDailyStreakMenuItem()
         syncLaunchAtLoginMenuItem()
         syncAutoEnableOnExternalPowerMenuItem()
     }
@@ -113,6 +119,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.delegate = self
         statusMenuItem.isEnabled = false
         menu.addItem(statusMenuItem)
+        dailyStreakMenuItem.isEnabled = false
+        syncDailyStreakMenuItem()
+        menu.addItem(dailyStreakMenuItem)
         menu.addItem(.separator())
         productionToggleMenuItem.action = #selector(toggleProduction)
         menu.addItem(productionToggleMenuItem)
@@ -173,6 +182,101 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         configuredImage.size = NSSize(width: 18, height: 18)
         return configuredImage
+    }
+
+    private func syncDailyStreakMenuItem() {
+        let startDate = dailyStreakStartDate
+        let dayCount = dailyStreakDayCount(since: startDate)
+        dailyStreakMenuItem.title = "Daily streak: Day \(dayCount) (since \(shortDailyStreakDate(startDate)))"
+        dailyStreakMenuItem.toolTip = "\(dayCount) \(dayCount == 1 ? "day" : "days") since \(longDailyStreakDate(startDate))"
+    }
+
+    private var dailyStreakStartDate: Date {
+        get {
+            if let storedValue = UserDefaults.standard.string(forKey: UserDefaultsKeys.dailyStreakStartDate),
+               let storedDate = dailyStreakDate(from: storedValue) {
+                return storedDate
+            }
+
+            let defaultDate = defaultDailyStreakStartDate()
+            UserDefaults.standard.set(dailyStreakDateString(for: defaultDate), forKey: UserDefaultsKeys.dailyStreakStartDate)
+            return defaultDate
+        }
+    }
+
+    private var dailyStreakCalendar: Calendar {
+        Calendar.autoupdatingCurrent
+    }
+
+    private func defaultDailyStreakStartDate() -> Date {
+        let calendar = dailyStreakCalendar
+        var components = DateComponents()
+        components.calendar = calendar
+        components.year = 2026
+        components.month = 4
+        components.day = 30
+        return calendar.date(from: components).map { calendar.startOfDay(for: $0) } ?? calendar.startOfDay(for: Date())
+    }
+
+    private func dailyStreakDate(from string: String) -> Date? {
+        let pieces = string.split(separator: "-").compactMap { Int($0) }
+        guard pieces.count == 3 else { return nil }
+
+        let calendar = dailyStreakCalendar
+        var components = DateComponents()
+        components.calendar = calendar
+        components.year = pieces[0]
+        components.month = pieces[1]
+        components.day = pieces[2]
+        return calendar.date(from: components).map { calendar.startOfDay(for: $0) }
+    }
+
+    private func dailyStreakDateString(for date: Date) -> String {
+        let components = dailyStreakCalendar.dateComponents([.year, .month, .day], from: date)
+        return String(format: "%04d-%02d-%02d", components.year ?? 0, components.month ?? 0, components.day ?? 0)
+    }
+
+    private func dailyStreakDayCount(since startDate: Date) -> Int {
+        let calendar = dailyStreakCalendar
+        let startDay = calendar.startOfDay(for: startDate)
+        let today = calendar.startOfDay(for: Date())
+        let elapsedDays = calendar.dateComponents([.day], from: startDay, to: today).day ?? 0
+        return max(1, elapsedDays + 1)
+    }
+
+    private func shortDailyStreakDate(_ date: Date) -> String {
+        formattedDailyStreakDate(date, template: "MMM d")
+    }
+
+    private func longDailyStreakDate(_ date: Date) -> String {
+        formattedDailyStreakDate(date, template: "MMM d, y")
+    }
+
+    private func formattedDailyStreakDate(_ date: Date, template: String) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = .autoupdatingCurrent
+        formatter.calendar = dailyStreakCalendar
+        formatter.setLocalizedDateFormatFromTemplate(template)
+        return formatter.string(from: date)
+    }
+
+    private func scheduleDailyStreakRefresh() {
+        dailyStreakRefreshTimer?.invalidate()
+
+        guard let nextRefreshDate = nextDailyStreakRefreshDate() else { return }
+        let timer = Timer(fire: nextRefreshDate, interval: 0, repeats: false) { [weak self] _ in
+            self?.syncDailyStreakMenuItem()
+            self?.scheduleDailyStreakRefresh()
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        dailyStreakRefreshTimer = timer
+    }
+
+    private func nextDailyStreakRefreshDate() -> Date? {
+        let calendar = dailyStreakCalendar
+        let today = calendar.startOfDay(for: Date())
+        guard let tomorrow = calendar.date(byAdding: .day, value: 1, to: today) else { return nil }
+        return calendar.date(byAdding: .second, value: 2, to: tomorrow)
     }
 
     private func configureAlertBubbleButton() {
@@ -869,4 +973,5 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
 private enum UserDefaultsKeys {
     static let autoEnableOnExternalPower = "autoEnableWhileCharging"
+    static let dailyStreakStartDate = "dailyStreakStartDate"
 }
