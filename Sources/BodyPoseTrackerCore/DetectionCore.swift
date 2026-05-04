@@ -76,6 +76,7 @@ public final class HairPickingDetector {
     public let headScale: Double
     public let faceHoldSeconds: TimeInterval
     public let maxHandFaceRatio: Double
+    public let minHeadRadius: Double
 
     private(set) public var streak = 0
     private var closeStartedAt: TimeInterval?
@@ -86,12 +87,14 @@ public final class HairPickingDetector {
         triggerSeconds: TimeInterval = 0.2,
         headScale: Double,
         faceHoldSeconds: TimeInterval,
-        maxHandFaceRatio: Double = 0.9
+        maxHandFaceRatio: Double = 0.9,
+        minHeadRadius: Double = 40.0
     ) {
         self.triggerSeconds = max(0, triggerSeconds)
         self.headScale = headScale
         self.faceHoldSeconds = faceHoldSeconds
         self.maxHandFaceRatio = max(0, maxHandFaceRatio)
+        self.minHeadRadius = max(0, minHeadRadius)
     }
 
     public func update(face: FaceBox?, hands: [[String: Landmark]], now: TimeInterval) -> HairAlertState {
@@ -120,7 +123,12 @@ public final class HairPickingDetector {
             )
         }
 
-        let zone = Self.estimateHeadZone(face: usableFace, headScale: headScale, stale: stale)
+        let zone = Self.estimateHeadZone(
+            face: usableFace,
+            headScale: headScale,
+            stale: stale,
+            minRadius: minHeadRadius
+        )
         let evaluatedHands = Self.evaluateHandSizes(
             hands: hands,
             face: usableFace,
@@ -167,10 +175,16 @@ public final class HairPickingDetector {
         closeStartedAt = nil
     }
 
-    public static func estimateHeadZone(face: FaceBox, headScale: Double, stale: Bool = false) -> HeadZone {
-        let baseRadiusX = max(48.0, face.width * 0.78 * headScale)
-        let baseRadiusY = max(58.0, face.height * 0.82 * headScale)
-        let radius = max(baseRadiusX, baseRadiusY) * 1.10
+    public static func estimateHeadZone(
+        face: FaceBox,
+        headScale: Double,
+        stale: Bool = false,
+        minRadius: Double = 40.0
+    ) -> HeadZone {
+        let scaledRadiusX = face.width * 0.78 * headScale
+        let scaledRadiusY = face.height * 0.82 * headScale
+        let scaledRadius = max(scaledRadiusX, scaledRadiusY) * 1.10
+        let radius = max(max(0, minRadius), scaledRadius)
 
         return HeadZone(
             centerX: face.x + face.width * 0.5,

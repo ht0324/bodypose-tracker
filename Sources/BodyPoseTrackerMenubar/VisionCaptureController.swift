@@ -24,7 +24,8 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
         triggerSeconds: DetectionConfig.production.triggerSeconds,
         headScale: DetectionConfig.production.headScale,
         faceHoldSeconds: DetectionConfig.production.faceHoldSeconds,
-        maxHandFaceRatio: DetectionConfig.production.maxHandFaceRatio
+        maxHandFaceRatio: DetectionConfig.production.maxHandFaceRatio,
+        minHeadRadius: DetectionConfig.production.minHeadRadius
     )
     private var lastProcessAt = Date.distantPast.timeIntervalSinceReferenceDate
     private var lastFaceProcessAt = Date.distantPast.timeIntervalSinceReferenceDate
@@ -66,7 +67,8 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
                 triggerSeconds: config.triggerSeconds,
                 headScale: config.headScale,
                 faceHoldSeconds: config.faceHoldSeconds,
-                maxHandFaceRatio: config.maxHandFaceRatio
+                maxHandFaceRatio: config.maxHandFaceRatio,
+                minHeadRadius: config.minHeadRadius
             )
             self.lastProcessAt = Date.distantPast.timeIntervalSinceReferenceDate
             self.lastFaceProcessAt = Date.distantPast.timeIntervalSinceReferenceDate
@@ -97,7 +99,8 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
                 self.log.write(
                     "started config=\(config.name) preset=\(config.capturePreset.rawValue) faceFPS=\(config.faceFPS) idleHandFPS=\(config.idleHandFPS) " +
                         "activeHandFPS=\(config.activeHandFPS) cameraFPS=\(config.cameraFPS) maxHands=\(config.maxHands) " +
-                        "triggerSeconds=\(config.triggerSeconds) maxHandFaceRatio=\(config.maxHandFaceRatio) handBoostHoldSeconds=\(config.handBoostHoldSeconds)"
+                        "triggerSeconds=\(config.triggerSeconds) maxHandFaceRatio=\(config.maxHandFaceRatio) " +
+                        "minHeadRadius=\(config.minHeadRadius) handBoostHoldSeconds=\(config.handBoostHoldSeconds)"
                 )
                 self.publishStatus("Enabled", state: .empty, force: true)
                 DispatchQueue.main.async {

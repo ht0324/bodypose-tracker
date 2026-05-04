@@ -149,9 +149,16 @@ final class DetectionCoreTests: XCTestCase {
     func testHeadZoneUsesRoundExpandedScale() {
         let face = FaceBox(x: 100, y: 100, width: 100, height: 80)
         let zone = HairPickingDetector.estimateHeadZone(face: face, headScale: 1.4)
-        let expectedRadius = max(48.0, face.width * 0.78 * 1.4, 58.0, face.height * 0.82 * 1.4) * 1.10
+        let expectedRadius = max(face.width * 0.78 * 1.4, face.height * 0.82 * 1.4) * 1.10
 
         XCTAssertEqual(zone.radius, expectedRadius, accuracy: 0.0001)
+    }
+
+    func testHeadZoneCanShrinkToConfigurableMinimumRadius() {
+        let face = FaceBox(x: 100, y: 100, width: 20, height: 20)
+        let zone = HairPickingDetector.estimateHeadZone(face: face, headScale: 1.4, minRadius: 40)
+
+        XCTAssertEqual(zone.radius, 40, accuracy: 0.0001)
     }
 
     func testUpperSideReuleauxZoneCatchesHairAreaOutsideOldCircle() {

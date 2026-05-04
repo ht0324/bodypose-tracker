@@ -268,9 +268,17 @@ final class DebugPreviewView: NSView {
             handFaceLimit,
             handSizeStatus
         )
-        let text = "\(line1)\n\(line2)\n\(line3)"
+        let line4 = String(
+            format: "params head x%.2f min %.0fpx | faceHold %.1fs | maxHands %d | hand/face limit %@",
+            frameData.config.headScale,
+            frameData.config.minHeadRadius,
+            frameData.config.faceHoldSeconds,
+            frameData.config.maxHands,
+            handFaceLimit
+        )
+        let text = "\(line1)\n\(line2)\n\(line3)\n\(line4)"
 
-        let barHeight: CGFloat = 66
+        let barHeight: CGFloat = 86
         let barRect = CGRect(x: imageRect.minX, y: imageRect.minY, width: imageRect.width, height: barHeight)
         NSColor.black.withAlphaComponent(0.78).setFill()
         barRect.fill()
