@@ -260,6 +260,7 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
     }
 
     private func publishStatus(_ status: String, state: HairAlertState, force: Bool = false) {
+        guard isRunning else { return }
         guard force || lastPublishedStatus != status || lastPublishedActive != state.active else {
             return
         }
@@ -275,6 +276,8 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
         didOutput sampleBuffer: CMSampleBuffer,
         from connection: AVCaptureConnection
     ) {
+        guard isRunning else { return }
+
         let now = Date.timeIntervalSinceReferenceDate
         if now - lastProcessAt < 1.0 / config.processingFPS {
             return

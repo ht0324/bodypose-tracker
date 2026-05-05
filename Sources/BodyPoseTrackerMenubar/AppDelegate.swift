@@ -32,11 +32,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var productionToggleMenuItem = NSMenuItem(title: "Enable", action: nil, keyEquivalent: "")
     private var launchAtLoginMenuItem = NSMenuItem(title: "Launch at Login", action: nil, keyEquivalent: "")
     private var autoEnableOnExternalPowerMenuItem = NSMenuItem(title: "Auto Enable on External Power", action: nil, keyEquivalent: "")
+    private var autoEnableOnAirPodsProMenuItem = NSMenuItem(title: "Auto Enable on AirPods Pro", action: nil, keyEquivalent: "")
     private var debugPreviewMenuItem = NSMenuItem(title: "Show Debug Preview", action: nil, keyEquivalent: "")
     private var controller: VisionCaptureController?
     private var debugPreviewWindow: DebugPreviewWindowController?
     private var powerStateMonitor: PowerStateMonitor?
+    private var airPodsProAudioSourceMonitor: AirPodsProAudioSourceMonitor?
     private var latestPowerState = PowerState(isConnectedToExternalPower: false, isCharging: false)
+    private var latestAirPodsProAudioSourceState = AirPodsProAudioSourceState(
+        isActive: false,
+        activeDeviceNames: [],
+        connectedDeviceNames: []
+    )
     private var productionWanted = false
     private var productionStartPending = false
     private var runningPauseAppBundleIDs = Set<String>()
@@ -54,7 +61,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         setupStatusItem()
         scheduleDailyStreakRefresh()
         scheduleEncouragementRefresh()
-        log.write("menubar app launched config=\(DetectionConfig.production.name) autoEnableOnExternalPower=\(autoEnableOnExternalPower)")
+        log.write(
+            "menubar app launched config=\(DetectionConfig.production.name) " +
+            "autoEnableOnExternalPower=\(autoEnableOnExternalPower) " +
+            "autoEnableOnAirPodsPro=\(autoEnableOnAirPodsPro)"
+        )
 
         controller = VisionCaptureController(log: log, alertSoundURL: options.alertSoundURL) { [weak self] status, state in
             self?.updateStatus(status, state: state)
@@ -71,6 +82,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             updateStatus("Stopped", state: .empty)
         }
         setupPowerStateMonitoring()
+        setupAirPodsProAudioSourceMonitoring()
 
         if let duration = options.duration {
             DispatchQueue.main.asyncAfter(deadline: .now() + duration) {
@@ -101,6 +113,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         encouragementRefreshTimer = nil
         powerStateMonitor?.stop()
         powerStateMonitor = nil
+        airPodsProAudioSourceMonitor?.stop()
+        airPodsProAudioSourceMonitor = nil
         stopAlertIconFlash()
         log.write("applicationWillTerminate")
     }
@@ -111,6 +125,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         syncEncouragementMenuItem()
         syncLaunchAtLoginMenuItem()
         syncAutoEnableOnExternalPowerMenuItem()
+        syncAutoEnableOnAirPodsProMenuItem()
     }
 
     private func setupStatusItem() {
@@ -140,6 +155,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         autoEnableOnExternalPowerMenuItem.action = #selector(toggleAutoEnableOnExternalPower)
         syncAutoEnableOnExternalPowerMenuItem()
         menu.addItem(autoEnableOnExternalPowerMenuItem)
+        autoEnableOnAirPodsProMenuItem.action = #selector(toggleAutoEnableOnAirPodsPro)
+        syncAutoEnableOnAirPodsProMenuItem()
+        menu.addItem(autoEnableOnAirPodsProMenuItem)
         menu.addItem(.separator())
         debugPreviewMenuItem.action = #selector(toggleDebugPreview)
         menu.addItem(debugPreviewMenuItem)
@@ -558,6 +576,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         autoEnableProductionIfNeededForPower(source: "setting toggle")
     }
 
+    private var autoEnableOnAirPodsPro: Bool {
+        get {
+            UserDefaults.standard.bool(forKey: UserDefaultsKeys.autoEnableOnAirPodsPro)
+        }
+        set {
+            UserDefaults.standard.set(newValue, forKey: UserDefaultsKeys.autoEnableOnAirPodsPro)
+        }
+    }
+
+    private func syncAutoEnableOnAirPodsProMenuItem() {
+        autoEnableOnAirPodsProMenuItem.title = "Auto Enable on AirPods Pro"
+        autoEnableOnAirPodsProMenuItem.state = autoEnableOnAirPodsPro ? .on : .off
+    }
+
+    @objc private func toggleAutoEnableOnAirPodsPro() {
+        autoEnableOnAirPodsPro.toggle()
+        syncAutoEnableOnAirPodsProMenuItem()
+        log.write("auto enable on AirPods Pro \(autoEnableOnAirPodsPro ? "enabled" : "disabled")")
+        refreshAirPodsProAudioSourceMonitoring(publishInitialState: autoEnableOnAirPodsPro)
+    }
+
     private func requestCameraAccess(_ completion: @escaping (Bool) -> Void) {
         let status = AVCaptureDevice.authorizationStatus(for: .video)
         log.write("camera authorization status before request=\(status.rawValue)")
@@ -596,10 +635,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func autoEnableProductionIfNeededForPower(source: String) {
         guard autoEnableOnExternalPower else { return }
         guard latestPowerState.canAutoEnableOnExternalPower else { return }
-        guard !productionWanted && controller?.isRunning != true && !productionStartPending else { return }
+        guard canAutoEnableProduction else { return }
 
         log.write("auto-enabling production on external power source=\(source)")
         start(.production)
+    }
+
+    private func setupAirPodsProAudioSourceMonitoring() {
+        let monitor = AirPodsProAudioSourceMonitor { [weak self] state, source in
+            self?.handleAirPodsProAudioSourceChange(state, source: source)
+        }
+        airPodsProAudioSourceMonitor = monitor
+        refreshAirPodsProAudioSourceMonitoring(publishInitialState: true)
+    }
+
+    private func refreshAirPodsProAudioSourceMonitoring(publishInitialState: Bool) {
+        guard let monitor = airPodsProAudioSourceMonitor else { return }
+        guard autoEnableOnAirPodsPro, canAutoEnableProduction else {
+            monitor.stop()
+            return
+        }
+
+        monitor.start(publishInitialState: publishInitialState)
+    }
+
+    private func handleAirPodsProAudioSourceChange(_ state: AirPodsProAudioSourceState, source: String) {
+        latestAirPodsProAudioSourceState = state
+        log.write(
+            "AirPods Pro audio source source=\(source) active=\(state.isActive) " +
+            "activeDevices=\(state.activeDeviceNames.joined(separator: ",")) " +
+            "connectedDevices=\(state.connectedDeviceNames.joined(separator: ","))"
+        )
+        autoEnableProductionIfNeededForAirPodsPro(source: source)
+    }
+
+    private func autoEnableProductionIfNeededForAirPodsPro(source: String) {
+        guard autoEnableOnAirPodsPro else { return }
+        guard latestAirPodsProAudioSourceState.canAutoEnableOnAirPodsPro else { return }
+        guard canAutoEnableProduction else { return }
+
+        log.write("auto-enabling production on AirPods Pro audio source source=\(source)")
+        start(.production)
+    }
+
+    private var canAutoEnableProduction: Bool {
+        !productionWanted && controller?.isRunning != true && !productionStartPending
     }
 
     private func setupPauseAppMonitoring() {
@@ -899,6 +979,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func start(_ config: DetectionConfig) {
         productionWanted = true
+        refreshAirPodsProAudioSourceMonitoring(publishInitialState: false)
         guard controller?.isRunning != true else {
             log.write("production start skipped; already running")
             return
@@ -981,6 +1062,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             break
         }
         syncProductionToggleMenuItem()
+        refreshAirPodsProAudioSourceMonitoring(publishInitialState: false)
     }
 
     private func syncProductionToggleMenuItem() {
@@ -1001,7 +1083,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         productionWanted = false
         productionStartPending = false
         stopPauseReconcileTimer()
-        syncProductionToggleMenuItem()
+        updateStatus("Stopped", state: .empty)
         stopAlertIconFlash()
         controller?.stop()
     }
@@ -1111,5 +1193,6 @@ private let encouragementQuietEndHour = 8
 
 private enum UserDefaultsKeys {
     static let autoEnableOnExternalPower = "autoEnableWhileCharging"
+    static let autoEnableOnAirPodsPro = "autoEnableOnAirPodsPro"
     static let dailyStreakStartDate = "dailyStreakStartDate"
 }
