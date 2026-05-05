@@ -28,6 +28,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem?
     private var statusMenuItem = NSMenuItem(title: "Starting...", action: nil, keyEquivalent: "")
     private var dailyStreakMenuItem = NSMenuItem(title: "Daily streak: Starting...", action: nil, keyEquivalent: "")
+    private var encouragementMenuItem = NSMenuItem(title: "You can do it! ✨", action: nil, keyEquivalent: "")
     private var productionToggleMenuItem = NSMenuItem(title: "Enable", action: nil, keyEquivalent: "")
     private var launchAtLoginMenuItem = NSMenuItem(title: "Launch at Login", action: nil, keyEquivalent: "")
     private var autoEnableOnExternalPowerMenuItem = NSMenuItem(title: "Auto Enable on External Power", action: nil, keyEquivalent: "")
@@ -44,6 +45,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var distributedObservers: [NSObjectProtocol] = []
     private var pauseReconcileTimer: Timer?
     private var dailyStreakRefreshTimer: Timer?
+    private var encouragementRefreshTimer: Timer?
     private var alertFlashTimer: Timer?
     private var alertFlashOffWorkItem: DispatchWorkItem?
 
@@ -51,6 +53,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSApp.setActivationPolicy(.accessory)
         setupStatusItem()
         scheduleDailyStreakRefresh()
+        scheduleEncouragementRefresh()
         log.write("menubar app launched config=\(DetectionConfig.production.name) autoEnableOnExternalPower=\(autoEnableOnExternalPower)")
 
         controller = VisionCaptureController(log: log, alertSoundURL: options.alertSoundURL) { [weak self] status, state in
@@ -94,6 +97,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         stopPauseReconcileTimer()
         dailyStreakRefreshTimer?.invalidate()
         dailyStreakRefreshTimer = nil
+        encouragementRefreshTimer?.invalidate()
+        encouragementRefreshTimer = nil
         powerStateMonitor?.stop()
         powerStateMonitor = nil
         stopAlertIconFlash()
@@ -103,6 +108,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     func menuWillOpen(_ menu: NSMenu) {
         syncProductionToggleMenuItem()
         syncDailyStreakMenuItem()
+        syncEncouragementMenuItem()
         syncLaunchAtLoginMenuItem()
         syncAutoEnableOnExternalPowerMenuItem()
     }
@@ -122,6 +128,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         dailyStreakMenuItem.isEnabled = false
         syncDailyStreakMenuItem()
         menu.addItem(dailyStreakMenuItem)
+        encouragementMenuItem.isEnabled = false
+        syncEncouragementMenuItem()
+        menu.addItem(encouragementMenuItem)
         menu.addItem(.separator())
         productionToggleMenuItem.action = #selector(toggleProduction)
         menu.addItem(productionToggleMenuItem)
@@ -277,6 +286,108 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let today = calendar.startOfDay(for: Date())
         guard let tomorrow = calendar.date(byAdding: .day, value: 1, to: today) else { return nil }
         return calendar.date(byAdding: .second, value: 2, to: tomorrow)
+    }
+
+    private func syncEncouragementMenuItem() {
+        let encouragement = encouragementLine(for: Date())
+        encouragementMenuItem.title = encouragement
+        encouragementMenuItem.toolTip = encouragement
+    }
+
+    private func encouragementLine(for date: Date) -> String {
+        guard let slot = encouragementRotationSlot(for: date) else {
+            return encouragementLines[0]
+        }
+
+        let calendar = Calendar.autoupdatingCurrent
+        let referenceDay = encouragementReferenceDay(in: calendar)
+        let dayOffset = calendar.dateComponents([.day], from: referenceDay, to: slot.dayStart).day ?? 0
+        let index = positiveModulo(
+            dayOffset * encouragementSlotsPerActiveDay + slot.slotIndex,
+            encouragementLines.count
+        )
+        return encouragementLines[index]
+    }
+
+    private func encouragementRotationSlot(for date: Date) -> (dayStart: Date, slotIndex: Int)? {
+        let calendar = Calendar.autoupdatingCurrent
+        let dayStart = calendar.startOfDay(for: date)
+        let hour = calendar.component(.hour, from: date)
+
+        if hour < encouragementQuietEndHour {
+            guard let previousDayStart = calendar.date(byAdding: .day, value: -1, to: dayStart) else {
+                return nil
+            }
+            return (previousDayStart, encouragementSlotsPerActiveDay - 1)
+        }
+
+        let hoursSinceQuietEnd = hour - encouragementQuietEndHour
+        let slotIndex = min(
+            hoursSinceQuietEnd / encouragementRotationIntervalHours,
+            encouragementSlotsPerActiveDay - 1
+        )
+        return (dayStart, slotIndex)
+    }
+
+    private func encouragementReferenceDay(in calendar: Calendar) -> Date {
+        var components = DateComponents()
+        components.calendar = calendar
+        components.year = 2026
+        components.month = 4
+        components.day = 30
+        return calendar.date(from: components).map { calendar.startOfDay(for: $0) } ?? calendar.startOfDay(for: Date())
+    }
+
+    private var encouragementSlotsPerActiveDay: Int {
+        let activeHours = 24 - encouragementQuietEndHour + encouragementQuietStartHour
+        return (activeHours + encouragementRotationIntervalHours - 1) / encouragementRotationIntervalHours
+    }
+
+    private func positiveModulo(_ value: Int, _ divisor: Int) -> Int {
+        let remainder = value % divisor
+        return remainder >= 0 ? remainder : remainder + divisor
+    }
+
+    private func scheduleEncouragementRefresh() {
+        encouragementRefreshTimer?.invalidate()
+
+        guard let nextRefreshDate = nextEncouragementRefreshDate() else { return }
+        let timer = Timer(fire: nextRefreshDate, interval: 0, repeats: false) { [weak self] _ in
+            self?.syncEncouragementMenuItem()
+            self?.scheduleEncouragementRefresh()
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        encouragementRefreshTimer = timer
+    }
+
+    private func nextEncouragementRefreshDate() -> Date? {
+        let calendar = Calendar.autoupdatingCurrent
+        let now = Date()
+        let dayStart = calendar.startOfDay(for: now)
+        let hour = calendar.component(.hour, from: now)
+
+        if hour < encouragementQuietEndHour {
+            return encouragementRefreshDate(on: dayStart, atHour: encouragementQuietEndHour, calendar: calendar)
+        }
+
+        let hoursSinceQuietEnd = hour - encouragementQuietEndHour
+        let nextRotationHour = encouragementQuietEndHour +
+            ((hoursSinceQuietEnd / encouragementRotationIntervalHours) + 1) * encouragementRotationIntervalHours
+        if nextRotationHour >= encouragementQuietStartHour + 24 {
+            guard let tomorrow = calendar.date(byAdding: .day, value: 1, to: dayStart) else {
+                return nil
+            }
+            return encouragementRefreshDate(on: tomorrow, atHour: encouragementQuietEndHour, calendar: calendar)
+        }
+
+        return encouragementRefreshDate(on: dayStart, atHour: nextRotationHour, calendar: calendar)
+    }
+
+    private func encouragementRefreshDate(on dayStart: Date, atHour hour: Int, calendar: Calendar) -> Date? {
+        guard let refreshHour = calendar.date(byAdding: .hour, value: hour, to: dayStart) else {
+            return nil
+        }
+        return calendar.date(byAdding: .second, value: 2, to: refreshHour)
     }
 
     private func configureAlertBubbleButton() {
@@ -970,6 +1081,33 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         NSApp.terminate(nil)
     }
 }
+
+private let encouragementLines = [
+    "You can do it! ✨",
+    "Fight the urge...",
+    "Hands stay gentle 💛",
+    "Let it pass.",
+    "Not this time!",
+    "Ride it out 🌊",
+    "Keep the streak!",
+    "Soft hands now.",
+    "You are steering.",
+    "Breathe, hands down.",
+    "Protect your progress.",
+    "Win this moment!",
+    "One clean minute.",
+    "Future you cheers!",
+    "Nope, not today.",
+    "Urge detected, denied.",
+    "Brain, we're busy.",
+    "Tiny win loading...",
+    "Back to keyboard!",
+    "You've got this! 💪"
+]
+
+private let encouragementRotationIntervalHours = 3
+private let encouragementQuietStartHour = 1
+private let encouragementQuietEndHour = 8
 
 private enum UserDefaultsKeys {
     static let autoEnableOnExternalPower = "autoEnableWhileCharging"
