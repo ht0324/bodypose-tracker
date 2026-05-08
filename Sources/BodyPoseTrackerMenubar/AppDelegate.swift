@@ -53,6 +53,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var pauseReconcileTimer: Timer?
     private var dailyStreakRefreshTimer: Timer?
     private var encouragementRefreshTimer: Timer?
+    private var encouragementNextRefreshDate: Date?
+    private var pausedEncouragementRefreshDelay: TimeInterval?
+    private var encouragementLineIndex = 0
     private var alertFlashTimer: Timer?
     private var alertFlashOffWorkItem: DispatchWorkItem?
 
@@ -111,6 +114,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         dailyStreakRefreshTimer = nil
         encouragementRefreshTimer?.invalidate()
         encouragementRefreshTimer = nil
+        encouragementNextRefreshDate = nil
+        pausedEncouragementRefreshDelay = nil
         powerStateMonitor?.stop()
         powerStateMonitor = nil
         airPodsProAudioSourceMonitor?.stop()
@@ -307,105 +312,86 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func syncEncouragementMenuItem() {
-        let encouragement = encouragementLine(for: Date())
+        let encouragement = currentEncouragementLine
         encouragementMenuItem.title = encouragement
         encouragementMenuItem.toolTip = encouragement
     }
 
-    private func encouragementLine(for date: Date) -> String {
-        guard let slot = encouragementRotationSlot(for: date) else {
-            return encouragementLines[0]
-        }
-
-        let calendar = Calendar.autoupdatingCurrent
-        let referenceDay = encouragementReferenceDay(in: calendar)
-        let dayOffset = calendar.dateComponents([.day], from: referenceDay, to: slot.dayStart).day ?? 0
-        let index = positiveModulo(
-            dayOffset * encouragementSlotsPerActiveDay + slot.slotIndex,
-            encouragementLines.count
-        )
-        return encouragementLines[index]
+    private var currentEncouragementLine: String {
+        guard !encouragementLines.isEmpty else { return "" }
+        return encouragementLines[encouragementLineIndex]
     }
 
-    private func encouragementRotationSlot(for date: Date) -> (dayStart: Date, slotIndex: Int)? {
-        let calendar = Calendar.autoupdatingCurrent
-        let dayStart = calendar.startOfDay(for: date)
-        let hour = calendar.component(.hour, from: date)
-
-        if hour < encouragementQuietEndHour {
-            guard let previousDayStart = calendar.date(byAdding: .day, value: -1, to: dayStart) else {
-                return nil
-            }
-            return (previousDayStart, encouragementSlotsPerActiveDay - 1)
-        }
-
-        let hoursSinceQuietEnd = hour - encouragementQuietEndHour
-        let slotIndex = min(
-            hoursSinceQuietEnd / encouragementRotationIntervalHours,
-            encouragementSlotsPerActiveDay - 1
-        )
-        return (dayStart, slotIndex)
+    private func advanceEncouragementLine() {
+        guard !encouragementLines.isEmpty else { return }
+        encouragementLineIndex = (encouragementLineIndex + 1) % encouragementLines.count
+        syncEncouragementMenuItem()
     }
 
-    private func encouragementReferenceDay(in calendar: Calendar) -> Date {
-        var components = DateComponents()
-        components.calendar = calendar
-        components.year = 2026
-        components.month = 4
-        components.day = 30
-        return calendar.date(from: components).map { calendar.startOfDay(for: $0) } ?? calendar.startOfDay(for: Date())
-    }
-
-    private var encouragementSlotsPerActiveDay: Int {
-        let activeHours = 24 - encouragementQuietEndHour + encouragementQuietStartHour
-        return (activeHours + encouragementRotationIntervalHours - 1) / encouragementRotationIntervalHours
-    }
-
-    private func positiveModulo(_ value: Int, _ divisor: Int) -> Int {
-        let remainder = value % divisor
-        return remainder >= 0 ? remainder : remainder + divisor
-    }
-
-    private func scheduleEncouragementRefresh() {
+    private func scheduleEncouragementRefresh(after delay: TimeInterval = encouragementRotationInterval) {
         encouragementRefreshTimer?.invalidate()
 
-        guard let nextRefreshDate = nextEncouragementRefreshDate() else { return }
+        let nextRefreshDate = nextEncouragementRefreshDate(after: delay)
         let timer = Timer(fire: nextRefreshDate, interval: 0, repeats: false) { [weak self] _ in
-            self?.syncEncouragementMenuItem()
-            self?.scheduleEncouragementRefresh()
+            self?.handleEncouragementRefresh()
         }
         RunLoop.main.add(timer, forMode: .common)
         encouragementRefreshTimer = timer
+        encouragementNextRefreshDate = nextRefreshDate
     }
 
-    private func nextEncouragementRefreshDate() -> Date? {
-        let calendar = Calendar.autoupdatingCurrent
-        let now = Date()
-        let dayStart = calendar.startOfDay(for: now)
-        let hour = calendar.component(.hour, from: now)
+    private func handleEncouragementRefresh() {
+        encouragementRefreshTimer = nil
+        encouragementNextRefreshDate = nil
+        advanceEncouragementLine()
+        scheduleEncouragementRefresh()
+    }
 
-        if hour < encouragementQuietEndHour {
-            return encouragementRefreshDate(on: dayStart, atHour: encouragementQuietEndHour, calendar: calendar)
+    private func pauseEncouragementRefreshForSleep() {
+        guard pausedEncouragementRefreshDelay == nil else { return }
+        pausedEncouragementRefreshDelay = encouragementNextRefreshDate.map {
+            max(0, $0.timeIntervalSinceNow)
         }
+        encouragementRefreshTimer?.invalidate()
+        encouragementRefreshTimer = nil
+        encouragementNextRefreshDate = nil
+    }
 
-        let hoursSinceQuietEnd = hour - encouragementQuietEndHour
-        let nextRotationHour = encouragementQuietEndHour +
-            ((hoursSinceQuietEnd / encouragementRotationIntervalHours) + 1) * encouragementRotationIntervalHours
-        if nextRotationHour >= encouragementQuietStartHour + 24 {
-            guard let tomorrow = calendar.date(byAdding: .day, value: 1, to: dayStart) else {
-                return nil
+    private func resumeEncouragementRefreshAfterWake() {
+        guard let delay = pausedEncouragementRefreshDelay else {
+            if encouragementRefreshTimer == nil {
+                scheduleEncouragementRefresh()
             }
-            return encouragementRefreshDate(on: tomorrow, atHour: encouragementQuietEndHour, calendar: calendar)
+            return
         }
 
-        return encouragementRefreshDate(on: dayStart, atHour: nextRotationHour, calendar: calendar)
+        pausedEncouragementRefreshDelay = nil
+        scheduleEncouragementRefresh(after: delay)
     }
 
-    private func encouragementRefreshDate(on dayStart: Date, atHour hour: Int, calendar: Calendar) -> Date? {
-        guard let refreshHour = calendar.date(byAdding: .hour, value: hour, to: dayStart) else {
-            return nil
+    private func nextEncouragementRefreshDate(after delay: TimeInterval) -> Date {
+        let proposedDate = Date(timeIntervalSinceNow: max(0, delay))
+        guard isEncouragementQuietTime(proposedDate) else { return proposedDate }
+
+        return encouragementQuietEndDate(after: proposedDate) ?? proposedDate
+    }
+
+    private func isEncouragementQuietTime(_ date: Date) -> Bool {
+        let hour = Calendar.autoupdatingCurrent.component(.hour, from: date)
+        return hour >= encouragementQuietStartHour || hour < encouragementQuietEndHour
+    }
+
+    private func encouragementQuietEndDate(after date: Date) -> Date? {
+        let calendar = Calendar.autoupdatingCurrent
+        let dayStart = calendar.startOfDay(for: date)
+        let quietEndDay: Date?
+        if calendar.component(.hour, from: date) < encouragementQuietEndHour {
+            quietEndDay = dayStart
+        } else {
+            quietEndDay = calendar.date(byAdding: .day, value: 1, to: dayStart)
         }
-        return calendar.date(byAdding: .second, value: 2, to: refreshHour)
+        guard let quietEndDay else { return nil }
+        return calendar.date(byAdding: .hour, value: encouragementQuietEndHour, to: quietEndDay)
     }
 
     private func configureAlertBubbleButton() {
@@ -721,6 +707,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 object: nil,
                 queue: .main
             ) { [weak self] _ in
+                self?.pauseEncouragementRefreshForSleep()
                 self?.setSystemPauseReason(.sleep, active: true, source: "will sleep")
             },
             workspaceCenter.addObserver(
@@ -728,6 +715,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 object: nil,
                 queue: .main
             ) { [weak self] _ in
+                self?.resumeEncouragementRefreshAfterWake()
                 self?.setSystemPauseReasons([.sleep, .displaySleep], active: false, source: "did wake")
             },
             workspaceCenter.addObserver(
@@ -1187,7 +1175,7 @@ private let encouragementLines = [
     "You've got this! 💪"
 ]
 
-private let encouragementRotationIntervalHours = 3
+private let encouragementRotationInterval: TimeInterval = 3 * 60 * 60
 private let encouragementQuietStartHour = 1
 private let encouragementQuietEndHour = 8
 
