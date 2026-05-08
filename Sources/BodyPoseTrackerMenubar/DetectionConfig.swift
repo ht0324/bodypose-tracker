@@ -32,7 +32,7 @@ struct DetectionConfig {
         triggerSeconds: 0.2,
         headScale: 1.4,
         faceHoldSeconds: 1.0,
-        maxHandFaceRatio: 0.9,
+        maxHandFaceRatio: 0.95,
         minHeadRadius: 40
     )
 }

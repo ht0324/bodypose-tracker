@@ -87,7 +87,7 @@ public final class HairPickingDetector {
         triggerSeconds: TimeInterval = 0.2,
         headScale: Double,
         faceHoldSeconds: TimeInterval,
-        maxHandFaceRatio: Double = 0.9,
+        maxHandFaceRatio: Double = 0.95,
         minHeadRadius: Double = 40.0
     ) {
         self.triggerSeconds = max(0, triggerSeconds)
