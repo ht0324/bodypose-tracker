@@ -10,6 +10,7 @@ private enum SystemPauseReason: String, CaseIterable {
     case displaySleep = "Display Sleep"
     case locked = "Locked"
     case screenSaver = "Screen Saver"
+    case eating = "Eating"
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
@@ -30,6 +31,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var dailyStreakMenuItem = NSMenuItem(title: "Daily streak: Starting...", action: nil, keyEquivalent: "")
     private var encouragementMenuItem = NSMenuItem(title: "You can do it! ✨", action: nil, keyEquivalent: "")
     private var productionToggleMenuItem = NSMenuItem(title: "Enable", action: nil, keyEquivalent: "")
+    private var eatingPauseMenuItem = NSMenuItem(title: "I am eating!", action: nil, keyEquivalent: "")
     private var launchAtLoginMenuItem = NSMenuItem(title: "Launch at Login", action: nil, keyEquivalent: "")
     private var autoEnableOnExternalPowerMenuItem = NSMenuItem(title: "Auto Enable on External Power", action: nil, keyEquivalent: "")
     private var autoEnableOnAirPodsProMenuItem = NSMenuItem(title: "Auto Enable on AirPods Pro", action: nil, keyEquivalent: "")
@@ -51,6 +53,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var workspaceObservers: [NSObjectProtocol] = []
     private var distributedObservers: [NSObjectProtocol] = []
     private var pauseReconcileTimer: Timer?
+    private var eatingPauseTimer: Timer?
+    private var eatingPauseEndDate: Date?
     private var dailyStreakRefreshTimer: Timer?
     private var encouragementRefreshTimer: Timer?
     private var encouragementNextRefreshDate: Date?
@@ -110,6 +114,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         distributedObservers = []
         stopPauseReconcileTimer()
+        eatingPauseTimer?.invalidate()
+        eatingPauseTimer = nil
+        eatingPauseEndDate = nil
         dailyStreakRefreshTimer?.invalidate()
         dailyStreakRefreshTimer = nil
         encouragementRefreshTimer?.invalidate()
@@ -126,6 +133,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     func menuWillOpen(_ menu: NSMenu) {
         syncProductionToggleMenuItem()
+        syncEatingPauseMenuItem()
         syncDailyStreakMenuItem()
         syncEncouragementMenuItem()
         syncLaunchAtLoginMenuItem()
@@ -154,6 +162,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(.separator())
         productionToggleMenuItem.action = #selector(toggleProduction)
         menu.addItem(productionToggleMenuItem)
+        eatingPauseMenuItem.action = #selector(startEatingPause)
+        syncEatingPauseMenuItem()
+        menu.addItem(eatingPauseMenuItem)
         launchAtLoginMenuItem.action = #selector(toggleLaunchAtLogin)
         syncLaunchAtLoginMenuItem()
         menu.addItem(launchAtLoginMenuItem)
@@ -1023,12 +1034,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         updateProductionToggleMenuItem(status: status)
         if state.active {
             startAlertIconFlash()
-        } else if status == "Stopped" {
+        } else if status == "Stopped" || status.hasPrefix("Paused:") {
             stopAlertIconFlash()
             configureStatusButton(
                 statusItem?.button,
                 symbolName: "hand.raised.slash",
-                accessibilityDescription: "BodyPoseTracker Stopped",
+                accessibilityDescription: status == "Stopped" ? "BodyPoseTracker Stopped" : "BodyPoseTracker Paused",
                 tint: nil
             )
         } else {
@@ -1050,16 +1061,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             break
         }
         syncProductionToggleMenuItem()
+        syncEatingPauseMenuItem()
         refreshAirPodsProAudioSourceMonitoring(publishInitialState: false)
     }
 
     private func syncProductionToggleMenuItem() {
+        if eatingPauseIsActive {
+            productionToggleMenuItem.title = "Enable"
+            productionToggleMenuItem.state = .off
+            return
+        }
+
         let enabled = productionWanted || productionStartPending || controller?.isRunning == true
         productionToggleMenuItem.title = enabled ? "Disable" : "Enable"
         productionToggleMenuItem.state = .off
     }
 
+    private func syncEatingPauseMenuItem() {
+        if let eatingPauseEndDate, eatingPauseIsActive {
+            let remainingSeconds = max(0, eatingPauseEndDate.timeIntervalSinceNow)
+            let remainingMinutes = max(1, Int(ceil(remainingSeconds / 60)))
+            eatingPauseMenuItem.title = "Eating pause: \(remainingMinutes)m left"
+            eatingPauseMenuItem.state = .on
+            eatingPauseMenuItem.isEnabled = false
+        } else {
+            let enabled = productionWanted || productionStartPending || controller?.isRunning == true
+            eatingPauseMenuItem.title = "I am eating!"
+            eatingPauseMenuItem.state = .off
+            eatingPauseMenuItem.isEnabled = enabled
+        }
+    }
+
+    private var eatingPauseIsActive: Bool {
+        systemPauseReasons.contains(.eating)
+    }
+
     @objc private func toggleProduction() {
+        if eatingPauseIsActive {
+            cancelEatingPause(source: "manual enable")
+            return
+        }
+
         if productionWanted || controller?.isRunning == true {
             stopProduction()
         } else {
@@ -1067,9 +1109,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    @objc private func startEatingPause() {
+        guard productionWanted || productionStartPending || controller?.isRunning == true else { return }
+
+        eatingPauseTimer?.invalidate()
+        eatingPauseEndDate = Date(timeIntervalSinceNow: eatingPauseDuration)
+        eatingPauseTimer = Timer.scheduledTimer(withTimeInterval: eatingPauseDuration, repeats: false) { [weak self] _ in
+            self?.finishEatingPause()
+        }
+        eatingPauseTimer?.tolerance = eatingPauseTimerTolerance
+        setSystemPauseReason(.eating, active: true, source: "eating button")
+        syncProductionToggleMenuItem()
+        syncEatingPauseMenuItem()
+        log.write("eating pause started durationSeconds=\(Int(eatingPauseDuration))")
+    }
+
+    private func finishEatingPause() {
+        eatingPauseTimer?.invalidate()
+        eatingPauseTimer = nil
+        eatingPauseEndDate = nil
+        setSystemPauseReason(.eating, active: false, source: "eating timer")
+        syncProductionToggleMenuItem()
+        syncEatingPauseMenuItem()
+        log.write("eating pause ended")
+    }
+
+    private func cancelEatingPause(source: String) {
+        guard eatingPauseTimer != nil || eatingPauseEndDate != nil || systemPauseReasons.contains(.eating) else { return }
+
+        eatingPauseTimer?.invalidate()
+        eatingPauseTimer = nil
+        eatingPauseEndDate = nil
+        setSystemPauseReason(.eating, active: false, source: source)
+        syncProductionToggleMenuItem()
+        syncEatingPauseMenuItem()
+        log.write("eating pause canceled source=\(source)")
+    }
+
     private func stopProduction() {
         productionWanted = false
         productionStartPending = false
+        cancelEatingPause(source: "manual stop")
         stopPauseReconcileTimer()
         updateStatus("Stopped", state: .empty)
         stopAlertIconFlash()
@@ -1178,6 +1258,8 @@ private let encouragementLines = [
 private let encouragementRotationInterval: TimeInterval = 3 * 60 * 60
 private let encouragementQuietStartHour = 1
 private let encouragementQuietEndHour = 8
+private let eatingPauseDuration: TimeInterval = 30 * 60
+private let eatingPauseTimerTolerance: TimeInterval = 5
 
 private enum UserDefaultsKeys {
     static let autoEnableOnExternalPower = "autoEnableWhileCharging"
