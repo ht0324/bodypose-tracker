@@ -20,6 +20,24 @@ struct DetectionConfig {
         max(faceFPS, activeHandFPS)
     }
 
+    func replacing(maxHandFaceRatio: Double) -> DetectionConfig {
+        DetectionConfig(
+            name: name,
+            capturePreset: capturePreset,
+            cameraFPS: cameraFPS,
+            faceFPS: faceFPS,
+            idleHandFPS: idleHandFPS,
+            activeHandFPS: activeHandFPS,
+            handBoostHoldSeconds: handBoostHoldSeconds,
+            maxHands: maxHands,
+            triggerSeconds: triggerSeconds,
+            headScale: headScale,
+            faceHoldSeconds: faceHoldSeconds,
+            maxHandFaceRatio: max(0, maxHandFaceRatio),
+            minHeadRadius: minHeadRadius
+        )
+    }
+
     static let production = DetectionConfig(
         name: "Production",
         capturePreset: .qvga320x240,
@@ -32,7 +50,7 @@ struct DetectionConfig {
         triggerSeconds: 0.2,
         headScale: 1.4,
         faceHoldSeconds: 1.0,
-        maxHandFaceRatio: 0.95,
+        maxHandFaceRatio: 1.3,
         minHeadRadius: 40
     )
 }

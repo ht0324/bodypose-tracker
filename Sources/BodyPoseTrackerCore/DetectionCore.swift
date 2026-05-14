@@ -75,7 +75,7 @@ public final class HairPickingDetector {
     public let triggerSeconds: TimeInterval
     public let headScale: Double
     public let faceHoldSeconds: TimeInterval
-    public let maxHandFaceRatio: Double
+    public private(set) var maxHandFaceRatio: Double
     public let minHeadRadius: Double
 
     private(set) public var streak = 0
@@ -87,7 +87,7 @@ public final class HairPickingDetector {
         triggerSeconds: TimeInterval = 0.2,
         headScale: Double,
         faceHoldSeconds: TimeInterval,
-        maxHandFaceRatio: Double = 0.95,
+        maxHandFaceRatio: Double = 1.3,
         minHeadRadius: Double = 40.0
     ) {
         self.triggerSeconds = max(0, triggerSeconds)
@@ -95,6 +95,10 @@ public final class HairPickingDetector {
         self.faceHoldSeconds = faceHoldSeconds
         self.maxHandFaceRatio = max(0, maxHandFaceRatio)
         self.minHeadRadius = max(0, minHeadRadius)
+    }
+
+    public func setMaxHandFaceRatio(_ maxHandFaceRatio: Double) {
+        self.maxHandFaceRatio = max(0, maxHandFaceRatio)
     }
 
     public func update(face: FaceBox?, hands: [[String: Landmark]], now: TimeInterval) -> HairAlertState {

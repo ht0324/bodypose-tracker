@@ -1203,6 +1203,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let preview = DebugPreviewWindowController()
         debugPreviewWindow = preview
         debugPreviewMenuItem.title = "Hide Debug Preview"
+        preview.onHandFaceLimitChanged = { [weak self] limit in
+            self?.controller?.setMaxHandFaceRatio(limit)
+        }
         preview.onClose = { [weak self, weak preview] in
             guard let self else { return }
             if self.debugPreviewWindow === preview {

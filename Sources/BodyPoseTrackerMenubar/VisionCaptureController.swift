@@ -142,6 +142,14 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
         }
     }
 
+    func setMaxHandFaceRatio(_ maxHandFaceRatio: Double) {
+        captureQueue.async {
+            let clampedLimit = max(0, maxHandFaceRatio)
+            self.config = self.config.replacing(maxHandFaceRatio: clampedLimit)
+            self.detector.setMaxHandFaceRatio(clampedLimit)
+        }
+    }
+
     private func configureSession() throws {
         session.beginConfiguration()
         configureSessionPreset()

@@ -73,12 +73,12 @@ final class DetectionCoreTests: XCTestCase {
 
         XCTAssertFalse(state.active)
         XCTAssertEqual(state.streak, 0)
-        XCTAssertGreaterThan(state.handFaceRatio ?? 0, 1.0)
+        XCTAssertGreaterThan(state.handFaceRatio ?? 0, 1.3)
         XCTAssertFalse(state.handSizeAccepted)
         XCTAssertNil(state.zoneScore)
     }
 
-    func testSameSizeHandDoesNotActivateAtDefaultRatio() {
+    func testSameSizeHandCanActivateAtDefaultRatio() {
         let detector = HairPickingDetector(triggerSeconds: 0.2, headScale: 1.4, faceHoldSeconds: 1.0)
         let face = FaceBox(x: 100, y: 100, width: 100, height: 100)
         let sameSizeHand = [[
@@ -93,10 +93,10 @@ final class DetectionCoreTests: XCTestCase {
         XCTAssertFalse(detector.update(face: face, hands: sameSizeHand, now: 0).active)
         let state = detector.update(face: face, hands: sameSizeHand, now: 0.2)
 
-        XCTAssertFalse(state.active)
+        XCTAssertTrue(state.active)
         XCTAssertEqual(state.handFaceRatio ?? -1, 1.0, accuracy: 0.0001)
-        XCTAssertFalse(state.handSizeAccepted)
-        XCTAssertNil(state.zoneScore)
+        XCTAssertTrue(state.handSizeAccepted)
+        XCTAssertLessThan(state.zoneScore ?? 999, 1.0)
     }
 
     func testSmallerHandCanActivateAtDefaultRatio() {
@@ -120,12 +120,12 @@ final class DetectionCoreTests: XCTestCase {
         XCTAssertLessThan(state.zoneScore ?? 999, 1.0)
     }
 
-    func testCustomHandFaceRatioCanAllowSameSizeHand() {
+    func testCustomHandFaceRatioCanRejectSameSizeHand() {
         let detector = HairPickingDetector(
             triggerSeconds: 0.2,
             headScale: 1.4,
             faceHoldSeconds: 1.0,
-            maxHandFaceRatio: 1.0
+            maxHandFaceRatio: 0.95
         )
         let face = FaceBox(x: 100, y: 100, width: 100, height: 100)
         let sameSizeHand = [[
@@ -140,9 +140,37 @@ final class DetectionCoreTests: XCTestCase {
         XCTAssertFalse(detector.update(face: face, hands: sameSizeHand, now: 0).active)
         let state = detector.update(face: face, hands: sameSizeHand, now: 0.2)
 
-        XCTAssertTrue(state.active)
+        XCTAssertFalse(state.active)
         XCTAssertEqual(state.handFaceRatio ?? -1, 1.0, accuracy: 0.0001)
+        XCTAssertFalse(state.handSizeAccepted)
+        XCTAssertNil(state.zoneScore)
+    }
+
+    func testUpdatingHandFaceRatioChangesAcceptance() {
+        let detector = HairPickingDetector(
+            triggerSeconds: 0,
+            headScale: 1.4,
+            faceHoldSeconds: 1.0,
+            maxHandFaceRatio: 0.95
+        )
+        let face = FaceBox(x: 100, y: 100, width: 100, height: 100)
+        let sameSizeHand = [[
+            "wrist": Landmark(x: 95, y: 110),
+            "thumb_tip": Landmark(x: 160, y: 100),
+            "index_tip": Landmark(x: 170, y: 80),
+            "middle_tip": Landmark(x: 180, y: 30),
+            "ring_tip": Landmark(x: 190, y: 65),
+            "little_tip": Landmark(x: 195, y: 90)
+        ]]
+
+        XCTAssertFalse(detector.update(face: face, hands: sameSizeHand, now: 0).handSizeAccepted)
+
+        detector.setMaxHandFaceRatio(1.3)
+        let state = detector.update(face: face, hands: sameSizeHand, now: 0.1)
+
         XCTAssertTrue(state.handSizeAccepted)
+        XCTAssertEqual(detector.maxHandFaceRatio, 1.3, accuracy: 0.0001)
+        XCTAssertEqual(state.handFaceRatio ?? -1, 1.0, accuracy: 0.0001)
         XCTAssertLessThan(state.zoneScore ?? 999, 1.0)
     }
 

@@ -37,15 +37,130 @@ final class DebugPreviewView: NSView {
         ("little_pip", "little_dip"),
         ("little_dip", "little_tip")
     ]
+    private static let statusBarHeight: CGFloat = 116
+    private static let sliderStripHeight: CGFloat = 30
+    private static let handFaceLimitRange: ClosedRange<Double> = 0.60...1.80
 
     var frameData: DebugFrame? {
         didSet {
+            if let frameData {
+                syncHandFaceControls(to: frameData.config.maxHandFaceRatio)
+                handFaceValueLabel.isHidden = false
+                handFaceLimitSlider.isHidden = false
+            } else {
+                handFaceValueLabel.isHidden = true
+                handFaceLimitSlider.isHidden = true
+            }
+            needsLayout = true
             needsDisplay = true
         }
+    }
+    var onHandFaceLimitChanged: ((Double) -> Void)?
+
+    private let handFaceValueLabel = NSTextField(labelWithString: "")
+    private lazy var handFaceLimitSlider: NSSlider = {
+        let slider = NSSlider(
+            value: DetectionConfig.production.maxHandFaceRatio,
+            minValue: Self.handFaceLimitRange.lowerBound,
+            maxValue: Self.handFaceLimitRange.upperBound,
+            target: self,
+            action: #selector(handFaceLimitSliderChanged(_:))
+        )
+        slider.isContinuous = true
+        slider.controlSize = .small
+        slider.focusRingType = .none
+        slider.toolTip = "Adjust hand/face size limit"
+        return slider
+    }()
+    private var pendingHandFaceLimit: Double?
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        configureHandFaceControls()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        configureHandFaceControls()
     }
 
     override var wantsUpdateLayer: Bool {
         false
+    }
+
+    override func layout() {
+        super.layout()
+        layoutHandFaceControls()
+    }
+
+    private func configureHandFaceControls() {
+        handFaceValueLabel.font = NSFont.monospacedSystemFont(ofSize: 12, weight: .medium)
+        handFaceValueLabel.textColor = NSColor.white.withAlphaComponent(0.92)
+        handFaceValueLabel.alignment = .left
+        handFaceValueLabel.isHidden = true
+        handFaceValueLabel.toolTip = "Current hand/face size limit"
+        updateHandFaceValueLabel(DetectionConfig.production.maxHandFaceRatio)
+
+        handFaceLimitSlider.isHidden = true
+        addSubview(handFaceValueLabel)
+        addSubview(handFaceLimitSlider)
+    }
+
+    private func layoutHandFaceControls() {
+        guard let frameData else {
+            handFaceValueLabel.isHidden = true
+            handFaceLimitSlider.isHidden = true
+            return
+        }
+
+        let imageRect = fittedImageRect(imageSize: frameData.imageSize)
+        let barRect = statusBarRect(imageRect: imageRect)
+        let controlRect = handFaceControlRect(in: barRect)
+        let labelWidth: CGFloat = 112
+        let sliderGap: CGFloat = 8
+        let sliderWidth = max(80, controlRect.width - labelWidth - sliderGap)
+
+        handFaceValueLabel.frame = CGRect(
+            x: controlRect.minX,
+            y: controlRect.minY + 3,
+            width: labelWidth,
+            height: 18
+        )
+        handFaceLimitSlider.frame = CGRect(
+            x: controlRect.minX + labelWidth + sliderGap,
+            y: controlRect.minY,
+            width: sliderWidth,
+            height: controlRect.height
+        )
+    }
+
+    private func syncHandFaceControls(to limit: Double) {
+        let roundedLimit = roundedHandFaceLimit(limit)
+        if let pendingHandFaceLimit, abs(roundedLimit - pendingHandFaceLimit) > 0.005 {
+            return
+        }
+
+        pendingHandFaceLimit = nil
+        handFaceLimitSlider.doubleValue = roundedLimit
+        updateHandFaceValueLabel(roundedLimit)
+    }
+
+    private func updateHandFaceValueLabel(_ limit: Double) {
+        handFaceValueLabel.stringValue = String(format: "hand/face %.2f", limit)
+    }
+
+    private func roundedHandFaceLimit(_ limit: Double) -> Double {
+        let clamped = min(max(limit, Self.handFaceLimitRange.lowerBound), Self.handFaceLimitRange.upperBound)
+        return (clamped * 100).rounded() / 100
+    }
+
+    @objc private func handFaceLimitSliderChanged(_ sender: NSSlider) {
+        let limit = roundedHandFaceLimit(sender.doubleValue)
+        sender.doubleValue = limit
+        pendingHandFaceLimit = limit
+        updateHandFaceValueLabel(limit)
+        onHandFaceLimitChanged?(limit)
+        needsDisplay = true
     }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -92,6 +207,21 @@ final class DebugPreviewView: NSView {
             y: bounds.midY - height * 0.5,
             width: width,
             height: height
+        )
+    }
+
+    private func statusBarRect(imageRect: CGRect) -> CGRect {
+        let barHeight = min(Self.statusBarHeight, max(0, imageRect.height))
+        return CGRect(x: imageRect.minX, y: imageRect.minY, width: imageRect.width, height: barHeight)
+    }
+
+    private func handFaceControlRect(in barRect: CGRect) -> CGRect {
+        let controlWidth = min(300, max(220, barRect.width - 20))
+        return CGRect(
+            x: barRect.minX + 10,
+            y: barRect.minY + 4,
+            width: controlWidth,
+            height: 24
         )
     }
 
@@ -278,18 +408,32 @@ final class DebugPreviewView: NSView {
         )
         let text = "\(line1)\n\(line2)\n\(line3)\n\(line4)"
 
-        let barHeight: CGFloat = 86
-        let barRect = CGRect(x: imageRect.minX, y: imageRect.minY, width: imageRect.width, height: barHeight)
+        let barRect = statusBarRect(imageRect: imageRect)
         NSColor.black.withAlphaComponent(0.78).setFill()
         barRect.fill()
 
+        let font = NSFont.monospacedSystemFont(ofSize: 12, weight: .medium)
+        let paragraphStyle = NSMutableParagraphStyle()
+        paragraphStyle.lineBreakMode = .byTruncatingTail
         let attributes: [NSAttributedString.Key: Any] = [
             .foregroundColor: NSColor.white.withAlphaComponent(0.92),
-            .font: NSFont.monospacedSystemFont(ofSize: 12, weight: .medium)
+            .font: font,
+            .paragraphStyle: paragraphStyle
         ]
-        NSAttributedString(string: text, attributes: attributes).draw(
-            in: barRect.insetBy(dx: 10, dy: 6)
+        let textRect = CGRect(
+            x: barRect.minX + 10,
+            y: barRect.minY + Self.sliderStripHeight + 4,
+            width: barRect.width - 20,
+            height: barRect.height - Self.sliderStripHeight - 10
         )
+        NSAttributedString(string: text, attributes: attributes).draw(in: textRect)
+
+        NSColor.white.withAlphaComponent(0.08).setStroke()
+        let divider = NSBezierPath()
+        divider.move(to: CGPoint(x: barRect.minX + 10, y: barRect.minY + Self.sliderStripHeight))
+        divider.line(to: CGPoint(x: barRect.maxX - 10, y: barRect.minY + Self.sliderStripHeight))
+        divider.lineWidth = 1
+        divider.stroke()
     }
 
     private func strongestHandSizeMetrics(_ frameData: DebugFrame) -> HandSizeMetrics? {
@@ -332,6 +476,11 @@ final class DebugPreviewView: NSView {
 final class DebugPreviewWindowController: NSWindowController, NSWindowDelegate {
     private let previewView = DebugPreviewView(frame: CGRect(x: 0, y: 0, width: 960, height: 620))
     var onClose: (() -> Void)?
+    var onHandFaceLimitChanged: ((Double) -> Void)? {
+        didSet {
+            previewView.onHandFaceLimitChanged = onHandFaceLimitChanged
+        }
+    }
 
     init() {
         let window = NSWindow(
