@@ -49,6 +49,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var productionWanted = false
     private var productionStartPending = false
     private var runningPauseAppBundleIDs = Set<String>()
+    private var manuallyResumedPauseAppBundleIDs = Set<String>()
     private var systemPauseReasons = Set<SystemPauseReason>()
     private var workspaceObservers: [NSObjectProtocol] = []
     private var distributedObservers: [NSObjectProtocol] = []
@@ -863,6 +864,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let launchedBundleIDs = runningPauseAppBundleIDs.subtracting(previousBundleIDs)
         let terminatedBundleIDs = previousBundleIDs.subtracting(runningPauseAppBundleIDs)
         let notifiedPauseBundleID = app?.bundleIdentifier.flatMap { pauseAppName(for: $0) == nil ? nil : $0 }
+        clearManualPauseAppOverrides(terminatedBundleIDs: terminatedBundleIDs)
         logPauseAppChanges(launchedBundleIDs: launchedBundleIDs, terminatedBundleIDs: terminatedBundleIDs)
 
         if launchedBundleIDs.isEmpty,
@@ -879,8 +881,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private var pauseReason: String? {
+        let activePauseAppBundleIDs = runningPauseAppBundleIDs.subtracting(manuallyResumedPauseAppBundleIDs)
         let appNames = pauseApps.compactMap { app in
-            runningPauseAppBundleIDs.contains(app.bundleID) ? app.name : nil
+            activePauseAppBundleIDs.contains(app.bundleID) ? app.name : nil
         }
         let systemNames = SystemPauseReason.allCases.compactMap { reason in
             systemPauseReasons.contains(reason) ? reason.rawValue : nil
@@ -891,6 +894,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func pauseAppName(for bundleID: String) -> String? {
         pauseApps.first { $0.bundleID == bundleID }?.name
+    }
+
+    private var canManuallyResumePausedProduction: Bool {
+        productionWanted &&
+            !productionStartPending &&
+            controller?.isRunning != true &&
+            !runningPauseAppBundleIDs.subtracting(manuallyResumedPauseAppBundleIDs).isEmpty &&
+            systemPauseReasons.isEmpty
     }
 
     private func reconcileProductionPause() {
@@ -943,6 +954,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             self.refreshRunningPauseApps()
             let launchedBundleIDs = self.runningPauseAppBundleIDs.subtracting(previousBundleIDs)
             let terminatedBundleIDs = previousBundleIDs.subtracting(self.runningPauseAppBundleIDs)
+            self.clearManualPauseAppOverrides(terminatedBundleIDs: terminatedBundleIDs)
             self.logPauseAppChanges(launchedBundleIDs: launchedBundleIDs, terminatedBundleIDs: terminatedBundleIDs)
             let systemChanged = self.refreshObservableSystemPauseReasons(source: "pause timer")
             let pauseReasonChanged = previousPauseReason != self.pauseReason
@@ -976,8 +988,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
-    private func start(_ config: DetectionConfig) {
+    private func manuallyResumeThroughRunningPauseApps() {
+        let bundleIDs = runningPauseAppBundleIDs.subtracting(manuallyResumedPauseAppBundleIDs)
+        guard !bundleIDs.isEmpty else { return }
+
+        manuallyResumedPauseAppBundleIDs.formUnion(bundleIDs)
+        let names = pauseAppNames(for: bundleIDs).joined(separator: ",")
+        log.write("manual enable overriding pause apps names=\(names)")
+    }
+
+    private func clearManualPauseAppOverrides(terminatedBundleIDs: Set<String>) {
+        let clearedBundleIDs = manuallyResumedPauseAppBundleIDs.intersection(terminatedBundleIDs)
+        guard !clearedBundleIDs.isEmpty else { return }
+
+        manuallyResumedPauseAppBundleIDs.subtract(clearedBundleIDs)
+        let names = pauseAppNames(for: clearedBundleIDs).joined(separator: ",")
+        log.write("manual pause app override cleared names=\(names)")
+    }
+
+    private func clearManualPauseAppOverrides(source: String) {
+        guard !manuallyResumedPauseAppBundleIDs.isEmpty else { return }
+
+        let names = pauseAppNames(for: manuallyResumedPauseAppBundleIDs).joined(separator: ",")
+        manuallyResumedPauseAppBundleIDs.removeAll()
+        log.write("manual pause app overrides cleared source=\(source) names=\(names)")
+    }
+
+    private func pauseAppNames(for bundleIDs: Set<String>) -> [String] {
+        pauseApps.compactMap { app in
+            bundleIDs.contains(app.bundleID) ? app.name : nil
+        }
+    }
+
+    private func start(_ config: DetectionConfig, overrideCurrentPauseApps: Bool = false) {
         productionWanted = true
+        if overrideCurrentPauseApps {
+            manuallyResumeThroughRunningPauseApps()
+        }
         refreshAirPodsProAudioSourceMonitoring(publishInitialState: false)
         guard controller?.isRunning != true else {
             log.write("production start skipped; already running")
@@ -1072,6 +1119,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return
         }
 
+        if canManuallyResumePausedProduction {
+            productionToggleMenuItem.title = "Resume Anyway"
+            productionToggleMenuItem.state = .off
+            return
+        }
+
         let enabled = productionWanted || productionStartPending || controller?.isRunning == true
         productionToggleMenuItem.title = enabled ? "Disable" : "Enable"
         productionToggleMenuItem.state = .off
@@ -1102,10 +1155,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             return
         }
 
+        if canManuallyResumePausedProduction {
+            start(.production, overrideCurrentPauseApps: true)
+            return
+        }
+
         if productionWanted || controller?.isRunning == true {
             stopProduction()
         } else {
-            start(.production)
+            start(.production, overrideCurrentPauseApps: true)
         }
     }
 
@@ -1149,6 +1207,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func stopProduction() {
         productionWanted = false
         productionStartPending = false
+        clearManualPauseAppOverrides(source: "manual stop")
         cancelEatingPause(source: "manual stop")
         stopPauseReconcileTimer()
         updateStatus("Stopped", state: .empty)
