@@ -173,7 +173,7 @@ final class DebugPreviewView: NSView {
         }
 
         let imageRect = fittedImageRect(imageSize: frameData.imageSize)
-        NSImage(cgImage: frameData.image, size: frameData.imageSize).draw(in: imageRect)
+        drawMirroredImage(frameData.image, size: frameData.imageSize, in: imageRect)
 
         drawFace(frameData.face, imageRect: imageRect)
         drawHeadZone(frameData.state.headZone, active: frameData.state.active, imageRect: imageRect)
@@ -195,6 +195,20 @@ final class DebugPreviewView: NSView {
                 y: bounds.midY - size.height * 0.5
             )
         )
+    }
+
+    private func drawMirroredImage(_ image: CGImage, size: CGSize, in imageRect: CGRect) {
+        let previewImage = NSImage(cgImage: image, size: size)
+        guard let context = NSGraphicsContext.current?.cgContext else {
+            previewImage.draw(in: imageRect)
+            return
+        }
+
+        context.saveGState()
+        context.translateBy(x: imageRect.maxX, y: imageRect.minY)
+        context.scaleBy(x: -1, y: 1)
+        previewImage.draw(in: CGRect(x: 0, y: 0, width: imageRect.width, height: imageRect.height))
+        context.restoreGState()
     }
 
     private func fittedImageRect(imageSize: CGSize) -> CGRect {
@@ -228,7 +242,7 @@ final class DebugPreviewView: NSView {
     private func projectTopLeftRect(_ rect: CGRect, into imageRect: CGRect) -> CGRect {
         let scale = imageRect.width / max(1, frameData?.imageSize.width ?? 1)
         return CGRect(
-            x: imageRect.minX + rect.origin.x * scale,
+            x: imageRect.maxX - (rect.origin.x + rect.width) * scale,
             y: imageRect.maxY - (rect.origin.y + rect.height) * scale,
             width: rect.width * scale,
             height: rect.height * scale
@@ -238,7 +252,7 @@ final class DebugPreviewView: NSView {
     private func point(fromTopLeftImagePoint point: Landmark, imageRect: CGRect) -> CGPoint {
         let scale = imageRect.width / max(1, frameData?.imageSize.width ?? 1)
         return CGPoint(
-            x: imageRect.minX + point.x * scale,
+            x: imageRect.maxX - point.x * scale,
             y: imageRect.maxY - point.y * scale
         )
     }
