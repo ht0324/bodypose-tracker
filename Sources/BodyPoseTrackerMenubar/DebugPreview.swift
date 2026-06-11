@@ -57,6 +57,13 @@ final class DebugPreviewView: NSView {
     }
     var onHandFaceLimitChanged: ((Double) -> Void)?
 
+    var placeholderMessage = "Waiting for camera frames..." {
+        didSet {
+            guard placeholderMessage != oldValue, frameData == nil else { return }
+            needsDisplay = true
+        }
+    }
+
     private let handFaceValueLabel = NSTextField(labelWithString: "")
     private lazy var handFaceLimitSlider: NSSlider = {
         let slider = NSSlider(
@@ -168,7 +175,7 @@ final class DebugPreviewView: NSView {
         bounds.fill()
 
         guard let frameData else {
-            drawCenteredMessage("Waiting for camera frames...")
+            drawCenteredMessage(placeholderMessage)
             return
         }
 
@@ -517,6 +524,10 @@ final class DebugPreviewWindowController: NSWindowController, NSWindowDelegate {
 
     func update(frame: DebugFrame) {
         previewView.frameData = frame
+    }
+
+    func updateStatus(_ status: String) {
+        previewView.placeholderMessage = "Waiting for camera frames... (\(status))"
     }
 
     func windowWillClose(_ notification: Notification) {

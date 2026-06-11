@@ -48,6 +48,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     )
     private var productionWanted = false
     private var productionStartPending = false
+    private var latestStatus = "Starting..."
     private var runningPauseAppBundleIDs = Set<String>()
     private var manuallyResumedPauseAppBundleIDs = Set<String>()
     private var systemPauseReasons = Set<SystemPauseReason>()
@@ -1077,7 +1078,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func updateStatus(_ status: String, state: HairAlertState) {
+        latestStatus = status
         statusMenuItem.title = "Status: \(status)"
+        debugPreviewWindow?.updateStatus(status)
         updateProductionToggleMenuItem(status: status)
         if state.active {
             startAlertIconFlash()
@@ -1261,6 +1264,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         let preview = DebugPreviewWindowController()
         debugPreviewWindow = preview
+        preview.updateStatus(latestStatus)
         debugPreviewMenuItem.title = "Hide Debug Preview"
         preview.onHandFaceLimitChanged = { [weak self] limit in
             self?.controller?.setMaxHandFaceRatio(limit)
