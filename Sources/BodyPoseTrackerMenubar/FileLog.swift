@@ -1,16 +1,22 @@
 import Foundation
 
 final class FileLog {
+    private static let maxLogBytes = 5 * 1024 * 1024
+
     private let queue = DispatchQueue(label: "BodyPoseTracker.log")
     private let url: URL
 
     init(url: URL) {
         self.url = url
-        try? FileManager.default.createDirectory(
+        let manager = FileManager.default
+        try? manager.createDirectory(
             at: url.deletingLastPathComponent(),
             withIntermediateDirectories: true
         )
-        FileManager.default.createFile(atPath: url.path, contents: nil)
+        let existingSize = (try? manager.attributesOfItem(atPath: url.path))?[.size] as? Int ?? 0
+        if !manager.fileExists(atPath: url.path) || existingSize > Self.maxLogBytes {
+            manager.createFile(atPath: url.path, contents: nil)
+        }
     }
 
     func write(_ message: String) {
