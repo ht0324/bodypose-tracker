@@ -1080,7 +1080,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func updateStatus(_ status: String, state: HairAlertState) {
         latestStatus = status
         statusMenuItem.title = "Status: \(status)"
-        debugPreviewWindow?.updateStatus(status)
+        debugPreviewWindow?.updateStatus(status, clearFrame: debugPreviewShouldClearFrame(for: status))
         updateProductionToggleMenuItem(status: status)
         if state.active {
             startAlertIconFlash()
@@ -1101,6 +1101,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 tint: nil
             )
         }
+    }
+
+    private func debugPreviewShouldClearFrame(for status: String) -> Bool {
+        status == "Stopped" ||
+            status.hasPrefix("Paused:") ||
+            status == "Checking Camera" ||
+            status == "Camera Permission Denied" ||
+            status == "Start failed"
     }
 
     private func updateProductionToggleMenuItem(status: String) {
@@ -1264,7 +1272,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         let preview = DebugPreviewWindowController()
         debugPreviewWindow = preview
-        preview.updateStatus(latestStatus)
+        preview.updateStatus(latestStatus, clearFrame: debugPreviewShouldClearFrame(for: latestStatus))
         debugPreviewMenuItem.title = "Hide Debug Preview"
         preview.onHandFaceLimitChanged = { [weak self] limit in
             self?.controller?.setMaxHandFaceRatio(limit)

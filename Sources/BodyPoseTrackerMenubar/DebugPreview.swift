@@ -526,8 +526,11 @@ final class DebugPreviewWindowController: NSWindowController, NSWindowDelegate {
         previewView.frameData = frame
     }
 
-    func updateStatus(_ status: String) {
+    func updateStatus(_ status: String, clearFrame: Bool = false) {
         previewView.placeholderMessage = "Waiting for camera frames... (\(status))"
+        if clearFrame {
+            previewView.frameData = nil
+        }
     }
 
     func windowWillClose(_ notification: Notification) {
