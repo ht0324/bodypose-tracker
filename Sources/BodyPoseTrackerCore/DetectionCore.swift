@@ -101,14 +101,22 @@ public final class HairPickingDetector {
         self.maxHandFaceRatio = max(0, maxHandFaceRatio)
     }
 
-    public func update(face: FaceBox?, hands: [[String: Landmark]], now: TimeInterval) -> HairAlertState {
+    /// `faceObservedAt` is when `face` was actually detected; callers that re-supply a
+    /// held face must pass the original observation time so the face hold does not
+    /// restart on every update. Defaults to `now` for freshly detected faces.
+    public func update(
+        face: FaceBox?,
+        faceObservedAt: TimeInterval? = nil,
+        hands: [[String: Landmark]],
+        now: TimeInterval
+    ) -> HairAlertState {
         let faceSeen = face != nil
         let usableFace: FaceBox
         let stale: Bool
 
         if let face {
             lastFace = face
-            lastFaceAt = now
+            lastFaceAt = min(faceObservedAt ?? now, now)
             usableFace = face
             stale = false
         } else if let lastFace, now - lastFaceAt <= faceHoldSeconds {

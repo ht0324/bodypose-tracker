@@ -231,6 +231,28 @@ final class DetectionCoreTests: XCTestCase {
         XCTAssertTrue(state.headZone?.stale ?? false)
     }
 
+    func testFaceHoldExpiresRelativeToObservationTime() {
+        let detector = HairPickingDetector(triggerSeconds: 0.3, headScale: 1.4, faceHoldSeconds: 1.0)
+        let face = FaceBox(x: 100, y: 100, width: 100, height: 100)
+        _ = detector.update(face: face, faceObservedAt: 0, hands: [], now: 0.9)
+
+        let state = detector.update(face: nil, hands: [["index_tip": Landmark(x: 170, y: 80)]], now: 1.2)
+
+        XCTAssertFalse(state.active)
+        XCTAssertNil(state.headZone)
+    }
+
+    func testReSuppliedHeldFaceStillCoversHoldWindow() {
+        let detector = HairPickingDetector(triggerSeconds: 0.3, headScale: 1.4, faceHoldSeconds: 1.0)
+        let face = FaceBox(x: 100, y: 100, width: 100, height: 100)
+        _ = detector.update(face: face, faceObservedAt: 0, hands: [], now: 0.5)
+
+        let state = detector.update(face: nil, hands: [["index_tip": Landmark(x: 170, y: 80)]], now: 0.9)
+
+        XCTAssertNotNil(state.headZone)
+        XCTAssertTrue(state.headZone?.stale ?? false)
+    }
+
     func testFaceHoldExpires() {
         let detector = HairPickingDetector(triggerSeconds: 0.3, headScale: 1.4, faceHoldSeconds: 1.0)
         let face = FaceBox(x: 100, y: 100, width: 100, height: 100)

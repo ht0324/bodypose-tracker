@@ -5,6 +5,7 @@ import CoreGraphics
 import CoreImage
 import CoreMedia
 import Foundation
+import os
 import Vision
 
 final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
@@ -27,9 +28,9 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
         maxHandFaceRatio: DetectionConfig.production.maxHandFaceRatio,
         minHeadRadius: DetectionConfig.production.minHeadRadius
     )
-    private var lastProcessAt = Date.distantPast.timeIntervalSinceReferenceDate
-    private var lastFaceProcessAt = Date.distantPast.timeIntervalSinceReferenceDate
-    private var lastHandProcessAt = Date.distantPast.timeIntervalSinceReferenceDate
+    private var nextProcessAt = Date.distantPast.timeIntervalSinceReferenceDate
+    private var nextFaceRunAt = Date.distantPast.timeIntervalSinceReferenceDate
+    private var nextHandRunAt = Date.distantPast.timeIntervalSinceReferenceDate
     private var lastFaceObservationAt = Date.distantPast.timeIntervalSinceReferenceDate
     private var lastHandObservationAt = Date.distantPast.timeIntervalSinceReferenceDate
     private var lastFrameWidth = 0
@@ -48,7 +49,16 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
     private var configured = false
     private var alertPlayer: AVAudioPlayer?
 
-    private(set) var isRunning = false
+    // Written on captureQueue, read from the main thread (menu state checks).
+    private let runningState = OSAllocatedUnfairLock(initialState: false)
+
+    var isRunning: Bool {
+        runningState.withLock { $0 }
+    }
+
+    private func setRunning(_ running: Bool) {
+        runningState.withLock { $0 = running }
+    }
 
     init(log: FileLog, alertSoundURL: URL?, onStatus: @escaping (String, HairAlertState) -> Void) {
         self.log = log
@@ -70,9 +80,9 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
                 maxHandFaceRatio: config.maxHandFaceRatio,
                 minHeadRadius: config.minHeadRadius
             )
-            self.lastProcessAt = Date.distantPast.timeIntervalSinceReferenceDate
-            self.lastFaceProcessAt = Date.distantPast.timeIntervalSinceReferenceDate
-            self.lastHandProcessAt = Date.distantPast.timeIntervalSinceReferenceDate
+            self.nextProcessAt = Date.distantPast.timeIntervalSinceReferenceDate
+            self.nextFaceRunAt = Date.distantPast.timeIntervalSinceReferenceDate
+            self.nextHandRunAt = Date.distantPast.timeIntervalSinceReferenceDate
             self.lastFaceObservationAt = Date.distantPast.timeIntervalSinceReferenceDate
             self.lastHandObservationAt = Date.distantPast.timeIntervalSinceReferenceDate
             self.lastFrameWidth = 0
@@ -95,7 +105,7 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
                 if !self.session.isRunning {
                     self.session.startRunning()
                 }
-                self.isRunning = true
+                self.setRunning(true)
                 self.log.write(
                     "started config=\(config.name) preset=\(config.capturePreset.rawValue) faceFPS=\(config.faceFPS) idleHandFPS=\(config.idleHandFPS) " +
                         "activeHandFPS=\(config.activeHandFPS) cameraFPS=\(config.cameraFPS) maxHands=\(config.maxHands) " +
@@ -121,7 +131,7 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
             if self.session.isRunning {
                 self.session.stopRunning()
             }
-            self.isRunning = false
+            self.setRunning(false)
             self.alertWasActive = false
             self.lastPublishedStatus = nil
             self.lastPublishedActive = nil
@@ -152,6 +162,7 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
 
     private func configureSession() throws {
         session.beginConfiguration()
+        defer { session.commitConfiguration() }
         configureSessionPreset()
 
         guard let device = AVCaptureDevice.default(for: .video) else {
@@ -173,8 +184,6 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
         }
         session.addOutput(output)
         configureConnectionFrameRate(output)
-
-        session.commitConfiguration()
     }
 
     private func configureSessionPreset() {
@@ -287,29 +296,27 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
         guard isRunning else { return }
 
         let now = Date.timeIntervalSinceReferenceDate
-        if now - lastProcessAt < 1.0 / config.processingFPS {
-            return
-        }
-        lastProcessAt = now
+        guard now >= nextProcessAt else { return }
+        advanceSchedule(&nextProcessAt, interval: 1.0 / config.processingFPS, now: now)
 
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
         let width = CVPixelBufferGetWidth(pixelBuffer)
         let height = CVPixelBufferGetHeight(pixelBuffer)
         logFrameSizeIfNeeded(width: width, height: height)
 
-        let runFace = now - lastFaceProcessAt >= 1.0 / config.faceFPS
+        let runFace = now >= nextFaceRunAt
         let handFPS = targetHandFPS(now: now)
-        let runHands = recentFace(now: now) != nil && now - lastHandProcessAt >= 1.0 / handFPS
+        let runHands = recentFace(now: now) != nil && now >= nextHandRunAt
         guard runFace || runHands else { return }
 
         var requests: [VNRequest] = []
         if runFace {
             requests.append(faceRequest)
-            lastFaceProcessAt = now
+            advanceSchedule(&nextFaceRunAt, interval: 1.0 / config.faceFPS, now: now)
         }
         if runHands {
             requests.append(handRequest)
-            lastHandProcessAt = now
+            advanceSchedule(&nextHandRunAt, interval: 1.0 / handFPS, now: now)
         }
 
         do {
@@ -321,7 +328,12 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
 
             if runHands {
                 let hands = recognizedHands(width: width, height: height)
-                let state = detector.update(face: face, hands: hands, now: now)
+                let state = detector.update(
+                    face: face,
+                    faceObservedAt: lastFaceObservationAt,
+                    hands: hands,
+                    now: now
+                )
                 if hands.contains(where: { !$0.isEmpty }) {
                     lastHandObservationAt = now
                 }
@@ -391,6 +403,14 @@ final class VisionCaptureController: NSObject, AVCaptureVideoDataOutputSampleBuf
                 observedProcessingFPS: observedFPS
             )
         )
+    }
+
+    // Advancing along a fixed schedule (instead of snapping to the frame time) keeps
+    // throttled rates at the configured FPS even though frames arrive on the camera's
+    // coarser timing grid; snapping rounded every interval up to the next frame boundary.
+    private func advanceSchedule(_ nextRunAt: inout TimeInterval, interval: TimeInterval, now: TimeInterval) {
+        let scheduled = nextRunAt + interval
+        nextRunAt = scheduled > now ? scheduled : now + interval
     }
 
     private func targetHandFPS(now: TimeInterval) -> Double {
